@@ -37,10 +37,36 @@ async def leave_queue(ctx):
 @bot.slash_command(name="queue_status", description="Check the queue status")
 async def queue_status(ctx):
     queue = await getAll()
-    if queue:
-        queue_list = "\n".join([f"{idx + 1}. <@{user_id}>" for idx, user_id in enumerate(queue)])
-        await ctx.respond(f"Current Queue:\n{queue_list}")
-    else:
+
+    if not queue:
         await ctx.respond("The queue is currently empty.")
+        return
+
+    lines = []
+    for idx, user_id in enumerate(queue, start=1):
+        user = bot.get_user(user_id)
+
+        if user is None:
+            try:
+                user = await bot.fetch_user(user_id)
+            except discord.NotFound:
+                lines.append(f"{idx}. ❌ Unknown user (`{user_id}`)")
+                await removeUser(user_id)
+                continue
+            except discord.HTTPException:
+                lines.append(f"{idx}. ⚠️ Error fetching user (`{user_id}`)")
+                continue
+
+        lines.append(f"{idx}. {user.name} ({user.mention})")
+
+    await ctx.respond("Current Queue:\n" + "\n".join(lines))
+
+@bot.slash_command(name="remove_from_queue", description="Admin: remove a user from the queue")
+@discord.default_permissions(administrator=True)
+async def remove_from_queue(ctx, user: discord.User):
+    if await removeUser(user.id):
+        await ctx.respond(f"✅ {user.mention} has been removed from the queue.")
+    else:
+        await ctx.respond(f"⚠️ {user.mention} is not in the queue.")
 
 bot.run(os.environ["BOT_TOKEN"])

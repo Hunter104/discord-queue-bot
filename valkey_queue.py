@@ -80,7 +80,8 @@ async def getSize(client, queue_id):
 @with_client
 async def getAll(client, queue_id):
     logger.info(f"Getting all users in queue {queue_id}")
-    return await client.lrange(get_queue_key(queue_id), 0, -1)
+    result = await client.lrange(get_queue_key(queue_id), 0, -1)
+    return [int(uid) for uid in result]
 
 async def main():
     res = await getSize()
