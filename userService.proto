@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+// RPC Server that manages SSH/Unix Users
+service UserManager {
+  // Remove user from whitelist and kick them from active sessions
+  rpc RemoveUser(UserRequest) returns (UserResponse) {}
+
+  // Add user to whitelist
+  rpc AddUser(UserRequest) returns (UserResponse) {}
+}
+
+message UserResponse {}
+// Request to act upon a unix user account
+message UserRequest {
+  // The user's name
+  string username = 1;
+}
