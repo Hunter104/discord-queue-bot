@@ -2,7 +2,9 @@ import discord
 import os
 import logging
 from dotenv import load_dotenv
-from valkey_queue import addUser, removeUser, getAll
+
+import valkey
+from valkey import addUser, removeUser, getAll
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,4 +71,6 @@ async def remove_from_queue(ctx, user: discord.User):
     else:
         await ctx.respond(f"⚠️ {user.mention} is not in the queue.")
 
+load_dotenv()
+valkey.configure(os.environ["VALKEY_HOST"], int(os.environ["VALKEY_PORT"]))
 bot.run(os.environ["BOT_TOKEN"])
