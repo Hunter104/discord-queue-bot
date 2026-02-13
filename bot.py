@@ -1,17 +1,24 @@
+import asyncio
+from datetime import datetime
+
 import aiosqlite
 import discord
 import os
 import logging
 import json
+
+import jinja2
 from discord.ext import tasks
 from dotenv import load_dotenv
+
+import bot_db
 from bot_db import getDiscordId, getUnixUser, registerUser
 
 import valkey
 from valkey import addUser, removeUser, getAll
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -21,6 +28,13 @@ load_dotenv()
 bot = discord.Bot()
 
 notification_task = None
+
+TEMPLATE_FILE="status_template.json.jinja"
+
+templateLoader = jinja2.FileSystemLoader(searchpath=".")
+templateEnv = jinja2.Environment(loader=templateLoader)
+
+template = templateEnv.get_template(TEMPLATE_FILE)
 
 @tasks.loop(seconds=1)
 async def read_notifications():
@@ -42,6 +56,7 @@ async def read_notifications():
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
     read_notifications.start()
+    update_status_messages.start()
 
 @bot.slash_command(name="join_queue", description="Join the queue")
 async def join_queue(ctx):
@@ -122,15 +137,39 @@ async def register(ctx, user: discord.User, unix_user: str):
         ctx.respond(f"Error registering user: {e}")
         logger.error(f"Error registering user: {e}")
 
+async def generateEmbed():
+    hostnames = await valkey.getHosts()
+    host_tasks = [valkey.getHostStatus(host) for host in hostnames]
+    template_vars = {
+        'hosts': await asyncio.gather(*host_tasks),
+        'queue': await valkey.getAll(),
+        'now': datetime.now(),
+    }
+    logger.debug(template_vars)
+    embed_json = template.render(template_vars)
+    return discord.Embed.from_dict(json.loads(embed_json))
+
+@tasks.loop(seconds=10)
+async def update_status_messages():
+    logger.info("Updating status messages")
+    status_messages = await bot_db.getStatusMessages()
+    embed = await generateEmbed()
+    for channelId, messageId in status_messages:
+        channel = await bot.fetch_channel(channelId)
+        message = await channel.fetch_message(messageId)
+        await message.edit(embeds=[embed])
+
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
-async def register(ctx, user: discord.User, unix_user: str):
+async def createStatusMessage(ctx):
+    embed = await generateEmbed()
     try:
-        await registerUser(user.id, unix_user)
-        ctx.respond("User registered successfully.")
+        msg = await ctx.channel.send(embeds=[embed])
+        await bot_db.registerStatusMessage(msg.channel.id, msg.id)
+        await ctx.respond("Message created succesfully")
     except aiosqlite.Error as e:
-        ctx.respond(f"Error registering user: {e}")
-        logger.error(f"Error registering user: {e}")
+        ctx.respond(f"Error creating message: {e}")
+        logger.error(f"Error creating message: {e}")
 
 
 load_dotenv()

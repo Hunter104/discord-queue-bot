@@ -4,7 +4,7 @@ import functools
 import json
 import os
 import logging
-from typing import Callable, Awaitable, Any, Concatenate, ParamSpec, TypeVar
+from typing import Callable, Awaitable, Any, Concatenate, ParamSpec, TypeVar, List
 
 import msgspec.json
 from glide import GlideClientConfiguration, NodeAddress, GlideClient
@@ -14,11 +14,6 @@ from glide_shared import ExpirySet, ExpiryType
 import common
 from common import PopNotification, HostStatus
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 _ADD_USER_SCRIPT = Script("""
@@ -71,12 +66,12 @@ async def getSize(client: GlideClient):
 
 # TODO: botar todos esses nomes de chaves em um arquivo de configuração
 @with_client
-async def getHosts(client: GlideClient):
+async def getHosts(client: GlideClient) -> List[str]:
     hosts = []
     cursor = '0'
     while True:
         cursor, vals = await client.scan(cursor, 'rpi:*')
-        hosts += [val.decode() for val in vals]
+        hosts += [val.decode().removeprefix('rpi:') for val in vals]
         if cursor.decode() == '0':
             break
     return hosts
@@ -87,7 +82,7 @@ async def setHostStatus(client: GlideClient, status: HostStatus):
 
 @with_client
 async def getHostStatus(client:GlideClient , name) -> HostStatus | None:
-    raw = await client.get(f'rpi{name}')
+    raw = await client.get(f'rpi:{name}')
     if raw is None:
         return None
     return msgspec.json.decode(raw, type=HostStatus)

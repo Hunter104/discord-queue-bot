@@ -1,0 +1,19 @@
+{
+  "description": "Current queue system status",
+  "fields": [
+    {
+      "name": "Connected Hosts",
+      "value": "{% if hosts %}{% for host in hosts %}\n- {{ host.hostname }} - {% if host.status.value == 'IN_USE' %}🔴 IN USE until <t:{{ host.expiry.timestamp() | int }}:F>{% else %}🟢 Awaiting{% endif %}\n{% endfor %}{% else %}None{% endif %}"
+    },
+    {
+      "name": "Queue",
+      "value": "{% if queue %}{% for user in queue %}\n- {{ user }}\n{% endfor %}{% else %}None{% endif %}"
+    },
+    {
+      "name": "Next up",
+      "value": "{{ queue[0] if queue else 'None' }}"
+    }
+  ],
+  "title": "Current Queue Status",
+  "timestamp": "{{ now.strftime('%Y-%m-%dT%H:%M:%S.000Z') }}"
+}
