@@ -3,6 +3,7 @@ import logging
 import os
 import socket
 from datetime import datetime, timedelta
+from common import STATUS
 from enum import Enum
 
 from discord.ui import user_select
@@ -15,10 +16,6 @@ import valkey
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-
-class STATUS(Enum):
-    AWAITING = "AWAITING"
-    IN_USE = "IN_USE"
 
 
 class HostController:

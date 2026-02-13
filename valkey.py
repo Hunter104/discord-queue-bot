@@ -1,9 +1,13 @@
+import dataclasses
 import functools
 import json
 import os
 import logging
 from glide import GlideClientConfiguration, NodeAddress, GlideClient
 from glide.glide import Script
+
+import common
+from common import PopNotification, HostStatus
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -56,23 +60,24 @@ async def getSize(client):
     return await client.llen('queue')
 
 @with_client
-async def setHostStatus(client, name, status):
-    return await client.hset(name, status)
+async def setHostStatus(client, status: HostStatus):
+    return await client.hset(f'rpi:{status.hostname}', dataclasses.asdict(status))
 
 @with_client
-async def getHostStatus(client, name):
-    raw = await client.hgetall(name)
-    # decode keys and values
-    return {k.decode(): v.decode() for k, v in raw.items()}
+async def getHostStatus(client, name) -> HostStatus | None:
+    raw = await client.hgetall(f'rpi{name}')
+    if raw is None:
+        return None
+    return HostStatus(**{k.decode(): v.decode() for k, v in raw.items()})
 
 @with_client
-async def sendNotification(client, data):
-    return await client.lpush('notifs', [json.dumps(data)])
+async def sendNotification(client, data: PopNotification):
+    return await client.lpush('notifs', [json.dumps(dataclasses.asdict(data))])
 
 @with_client
-async def popNotificationBlocking(client):
-    data = (await client.brpop(['notifs'], 0))[1]
-    return json.loads(data)
+async def popNotificationBlocking(client) -> PopNotification:
+    raw = (await client.brpop(['notifs'], 0))[1]
+    return PopNotification(**json.loads(raw.decode()))
 
 @with_client
 async def getAll(client):

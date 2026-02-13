@@ -24,11 +24,10 @@ notification_task = None
 
 @tasks.loop(seconds=1)
 async def read_notifications():
-    logger.info("Waiting for notification...")
     data = await valkey.popNotificationBlocking()
     # TODO: temporary, get discord user from unix via db query
-    logger.info(f"Sending notification to user {data}")
-    unix_user = data["user"]
+    logger.info(f"Received notification: {data}")
+    unix_user = data.unix_user
     discord_id = await getDiscordId(unix_user)
     if discord_id is None:
         logger.error(f"Unix user {unix_user} not registered.")
@@ -37,7 +36,7 @@ async def read_notifications():
     if discord_user is None:
         logger.error(f"Could not find discord user for id {discord_id}")
         return
-    await discord_user.send(f'You have been assigned to host {data["name"]}.')
+    await discord_user.send(f'You have been assigned to host {data.hostname}.')
 
 @bot.event
 async def on_ready():
