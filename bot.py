@@ -1,6 +1,8 @@
 import discord
 import os
 import logging
+import json
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 import valkey
@@ -16,9 +18,21 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 bot = discord.Bot()
 
+notification_task = None
+
+@tasks.loop(seconds=1)
+async def read_notifications():
+    logger.info("Waiting for notification...")
+    data = await valkey.popNotificationBlocking()
+    # TODO: temporary, get discord user from unix via db query
+    logger.info(f"Sending notification to user {data}")
+    user = await bot.fetch_user(int(data["user"]))
+    await user.send(f'You have been assigned to host {data["name"]}')
+
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
+    read_notifications.start()
 
 @bot.slash_command(name="join_queue", description="Join the queue")
 async def join_queue(ctx):

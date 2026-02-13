@@ -5,7 +5,9 @@ import socket
 from datetime import datetime, timedelta
 from enum import Enum
 
+from discord.ui import user_select
 from dotenv import load_dotenv
+from numpy.f2py.crackfortran import usermodules
 
 import valkey
 
@@ -43,18 +45,18 @@ class HostController:
         with open(self.whitelist_path, "w") as f:
             f.write("\n".join(whitelist))
 
-    async def assign_user(self, user_id: str):
-        logger.info(f"Assigning user {user_id}")
+    async def assign_user(self, user: str):
+        logger.info(f"Assigning user {user}")
 
-        self.current_user = user_id
+        self.current_user = user
         self.status = STATUS.IN_USE
         self.expiry = datetime.now() + self.time_slice
 
         await self.valkey.sendNotification(
-            {"name": self.name, "user_id": user_id}
+            {"name": self.name, "user": user}
         )
 
-        self.set_whitelist([user_id])
+        self.set_whitelist([user])
 
         self._expiry_task = asyncio.create_task(self._expiry_timer())
 

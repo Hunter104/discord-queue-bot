@@ -16,6 +16,7 @@ def configure(host, port):
     global _config
     _config = GlideClientConfiguration([NodeAddress(host, port)], request_timeout=500)
 
+# TODO: maybe not efficient
 def with_client(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -30,17 +31,18 @@ def with_client(func):
 
 #TODO: fetch unix user from user id and push that instead
 @with_client
-async def addUser(client, user_id):
-    logger.info(f"Adding user {user_id} to queue")
-    if user_id not in await getAll():
-        return await client.lpush('queue', [str(user_id)])
+async def addUser(client, username):
+    logger.info(f"Adding user {username} to queue")
+    # TODO: fix datatype here
+    if username not in await getAll():
+        return await client.lpush('queue', [str(username)])
     else:
         return None
 
 @with_client
 async def popBlocking(client):
     logger.info("Popping user from queue ")
-    return (await client.blpop(['queue'], 0))[1]
+    return (await client.brpop(['queue'], 0))[1]
 
 @with_client
 async def removeUser(client, user_id):
@@ -58,6 +60,13 @@ async def setHostStatus(client, name, status):
     return await client.hset(name, status)
 
 @with_client
+async def getHostStatus(client, name):
+    logger.info(f"Getting host status for {name}")
+    raw = await client.hgetall(name)
+    # decode keys and values
+    return {k.decode(): v.decode() for k, v in raw.items()}
+
+@with_client
 async def sendNotification(client, data):
     logger.info(f"Sending notification: {data}")
     return await client.lpush('notifs', [json.dumps(data)])
@@ -65,12 +74,11 @@ async def sendNotification(client, data):
 @with_client
 async def popNotificationBlocking(client):
     logger.info("Popping notification from queue ")
-    data = await client.brpop('notifs')
+    data = (await client.brpop(['notifs'], 0))[1]
     return json.loads(data)
 
 @with_client
 async def getAll(client):
     logger.info(f"Getting all users in queue")
-    result = await client.lrange('queue', 0, -1)
-    return [int(uid) for uid in result]
-
+    raw = await client.lrange('queue', 0, -1)
+    return [x.decode() for x in raw]
