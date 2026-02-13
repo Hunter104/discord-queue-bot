@@ -66,6 +66,11 @@ async def leave_queue(ctx):
     else:
         await ctx.respond("You are not in the queue.")
 
+@bot.slash_command(name="host_status", description="Check status of all hosts")
+async def host_status(ctx):
+    hosts = await valkey.getHosts()
+    print(hosts)
+
 @bot.slash_command(name="queue_status", description="Check the queue status")
 async def queue_status(ctx):
     queue = await getAll()
@@ -108,6 +113,16 @@ async def remove_from_queue(ctx, unix_user: discord.User):
         await ctx.respond(f"⚠️ {unix_user.mention} is not in the queue.")
 
 @bot.slash_command(name="register", description="Admin: register user into the system")
+@discord.default_permissions(manage_guild=True)
+async def register(ctx, user: discord.User, unix_user: str):
+    try:
+        await registerUser(user.id, unix_user)
+        ctx.respond("User registered successfully.")
+    except aiosqlite.Error as e:
+        ctx.respond(f"Error registering user: {e}")
+        logger.error(f"Error registering user: {e}")
+
+@bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
 async def register(ctx, user: discord.User, unix_user: str):
     try:

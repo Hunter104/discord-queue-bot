@@ -14,17 +14,14 @@ from numpy.f2py.crackfortran import usermodules
 
 import valkey
 
-
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-
 
 
 class HostController:
     def __init__(self, name: str, whitelist_path: str, valkey_client, time_slice: timedelta):
         self.name = name
         self.whitelist_path = whitelist_path
-        self.valkey = valkey_client
         self.time_slice = time_slice
 
         self.status = STATUS.AWAITING
@@ -51,9 +48,7 @@ class HostController:
         self.status = STATUS.IN_USE
         self.expiry = datetime.now() + self.time_slice
 
-        await self.valkey.sendNotification(
-            {"name": self.name, "user": user}
-        )
+        await valkey.sendNotification(common.PopNotification(self.name, user))
 
         self.set_whitelist([user])
 
@@ -86,30 +81,28 @@ class HostController:
             if self.status == STATUS.AWAITING:
                 logger.info("Waiting for user...")
 
-                user = await self.valkey.popBlocking()
+                user = await valkey.popBlocking()
                 if user:
-                    await self.assign_user(user.decode())
+                    await self.assign_user(user)
 
             await asyncio.sleep(1)
 
     async def update_status_loop(self):
         while not self._shutdown.is_set():
-            await self.valkey.setHostStatus(
+            await valkey.setHostStatus(common.HostStatus(
                 self.name,
-                {
-                    "status": self.status.value,
-                    "expiry": str(self.expiry),
-                    "current_user": str(self.current_user),
-                },
-            )
+                self.status,
+                self.expiry,
+                self.current_user,
+            ))
             await asyncio.sleep(common.STATUS_UPDATE_INTERVAL)
 
     async def recover_last_state(self):
-        last_state = await self.valkey.getHostStatus(self.name)
+        last_state = await valkey.getHostStatus(self.name)
         if last_state:
-            self.status = STATUS(last_state["status"])
-            self.expiry = datetime.fromisoformat(last_state["expiry"])
-            self.current_user = last_state["current_user"]
+            self.status = last_state.status
+            self.expiry = last_state.expiry
+            self.current_user = last_state.current_user
 
     async def shutdown(self):
         logger.info("Shutting down host controller...")

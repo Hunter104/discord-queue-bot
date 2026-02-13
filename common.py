@@ -1,6 +1,7 @@
-import datetime
+from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
+import msgspec
 
 # seconds
 STATUS_UPDATE_INTERVAL = 5
@@ -9,14 +10,12 @@ class STATUS(Enum):
     AWAITING = "AWAITING"
     IN_USE = "IN_USE"
 
-@dataclass
-class PopNotification:
+class PopNotification(msgspec.Struct):
     hostname: str
     unix_user: str
 
-@dataclass
-class HostStatus:
+class HostStatus(msgspec.Struct):
     hostname: str
-    status: str
-    expiry: datetime.datetime
+    status: STATUS
+    expiry: datetime
     current_user: str | None
