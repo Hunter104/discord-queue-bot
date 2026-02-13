@@ -32,7 +32,6 @@ def with_client(func):
     async def wrapper(*args, **kwargs):
         if _config is None:
             raise RuntimeError("Glide client not configured")
-        logger.info("Creating Glide client")
         client = await GlideClient.create(_config)
         result = await func(client, *args, **kwargs)
         await client.close()
