@@ -5,6 +5,7 @@ import os
 import logging
 from glide import GlideClientConfiguration, NodeAddress, GlideClient
 from glide.glide import Script
+from glide_shared import ExpirySet, ExpiryType
 
 import common
 from common import PopNotification, HostStatus
@@ -60,8 +61,9 @@ async def getSize(client):
     return await client.llen('queue')
 
 @with_client
-async def setHostStatus(client, status: HostStatus):
-    return await client.hset(f'rpi:{status.hostname}', dataclasses.asdict(status))
+async def setHostStatus(client: GlideClient, status: HostStatus):
+    return await client.hsetex(f'rpi:{status.hostname}', dataclasses.asdict(status),
+                               expiry=ExpirySet(ExpiryType.SEC, common.STATUS_UPDATE_INTERVAL*2))
 
 @with_client
 async def getHostStatus(client, name) -> HostStatus | None:

@@ -3,6 +3,8 @@ import logging
 import os
 import socket
 from datetime import datetime, timedelta
+
+import common
 from common import STATUS
 from enum import Enum
 
@@ -100,7 +102,7 @@ class HostController:
                     "current_user": str(self.current_user),
                 },
             )
-            await asyncio.sleep(5)
+            await asyncio.sleep(common.STATUS_UPDATE_INTERVAL)
 
     async def recover_last_state(self):
         last_state = await self.valkey.getHostStatus(self.name)

@@ -2,6 +2,8 @@ import datetime
 from dataclasses import dataclass
 from enum import Enum
 
+# seconds
+STATUS_UPDATE_INTERVAL = 5
 
 class STATUS(Enum):
     AWAITING = "AWAITING"
