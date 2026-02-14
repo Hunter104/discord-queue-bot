@@ -1,16 +1,12 @@
-import dataclasses
+import datetime
 import datetime
 import enum
 import functools
-import json
-import os
 import logging
-import warnings
-from typing import Callable, Awaitable, Any, Concatenate, ParamSpec, TypeVar, List
+from typing import Callable, Awaitable, Concatenate, ParamSpec, TypeVar
 
-import glide
 import msgspec.json
-from glide import GlideClientConfiguration, NodeAddress, GlideClient, ListDirection
+from glide import GlideClientConfiguration, NodeAddress, GlideClient
 from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
 
@@ -187,7 +183,7 @@ async def pop_waiting(client:GlideClient, hostname: str) -> str | None:
 # TODO: maybe not clean code
 @with_client
 async def finish_processing(client: GlideClient, hostname: str, user: str, expiry: datetime.datetime):
-    """Mark the end of processing user by host, sends notification to bot, removes user from the processing queue and fills in occupied slot data"""
+    """Mark the end of processing user by host, sends notification to bot, removes user from the processing queue, and fills in occupied slot data"""
     transaction = Batch(is_atomic=True)
 
     occupied_slot = SlotData(user, expiry)

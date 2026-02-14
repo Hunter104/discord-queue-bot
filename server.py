@@ -99,7 +99,7 @@ class HostController:
         elif self.status == HostStatus.AWAITING:
             logger.info("Waiting for user...")
         else:
-            logger.warning("Unkown state %s", self.status)
+            logger.warning("Unknown state %s", self.status)
 
         while not self._shutdown.is_set():
             if self.status == HostStatus.AWAITING:
