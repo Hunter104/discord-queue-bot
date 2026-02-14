@@ -15,6 +15,7 @@ import bot_db
 from bot_db import getDiscordId, getUnixUser, registerUser
 
 import valkey
+from common import HeartbeatData, HostStatus
 from valkey import add_user, remove_waiting_user, get_all_waiting_users
 
 logging.basicConfig(
@@ -40,7 +41,7 @@ template = templateEnv.get_template(TEMPLATE_FILE)
 async def read_notifications():
     data = await valkey.pop_notification_blocking()
     # TODO: temporary, get discord user from unix via db query
-    logger.info(f"Received notification: {data}")
+    logger.info(f"Got notification: {data}")
     unix_user = data.unix_user
     discord_id = await getDiscordId(unix_user)
     if discord_id is None:
@@ -55,8 +56,12 @@ async def read_notifications():
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
+
+    logger.info('Starting notification reading loop')
     read_notifications.start()
-    # update_status_messages.start()
+
+    logger.info('Starting status message update loop')
+    update_status_messages.start()
 
 @bot.slash_command(name="join_queue", description="Join the queue")
 async def join_queue(ctx):
@@ -84,11 +89,6 @@ async def leave_queue(ctx):
         await ctx.respond("You have been removed from the queue.")
     else:
         await ctx.respond("You are not in the queue.")
-
-# @bot.slash_command(name="host_status", description="Check status of all hosts")
-# async def host_status(ctx):
-#     hosts = await valkey.getHosts()
-#     print(hosts)
 
 @bot.slash_command(name="queue_status", description="Check the queue status")
 async def queue_status(ctx):
@@ -141,39 +141,55 @@ async def register(ctx, user: discord.User, unix_user: str):
         ctx.respond(f"Error registering user: {e}")
         logger.error(f"Error registering user: {e}")
 
-# async def generateEmbed():
-#     hostnames = await valkey.getHosts()
-#     host_tasks = [valkey.get_heartbeat(host) for host in hostnames]
-#     template_vars = {
-#         'hosts': await asyncio.gather(*host_tasks),
-#         'queue': await valkey.getAll(),
-#         'now': datetime.now(),
-#     }
-#     logger.debug(template_vars)
-#     embed_json = template.render(template_vars)
-#     return discord.Embed.from_dict(json.loads(embed_json))
-#
-# @tasks.loop(seconds=3)
-# async def update_status_messages():
-#     logger.info("Updating status messages")
-#     status_messages = await bot_db.getStatusMessages()
-#     embed = await generateEmbed()
-#     for channelId, messageId in status_messages:
-#         channel = await bot.fetch_channel(channelId)
-#         message = await channel.fetch_message(messageId)
-#         await message.edit(embeds=[embed])
-#
-# @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
-# @discord.default_permissions(manage_guild=True)
-# async def createStatusMessage(ctx):
-#     embed = await generateEmbed()
-#     try:
-#         msg = await ctx.channel.send(embeds=[embed])
-#         await bot_db.registerStatusMessage(msg.channel.id, msg.id)
-#         await ctx.respond("Message created succesfully")
-#     except aiosqlite.Error as e:
-#         ctx.respond(f"Error creating message: {e}")
-#         logger.error(f"Error creating message: {e}")
+async def pretty_format_host(data: HeartbeatData) -> str:
+    match data.status:
+        case HostStatus.IN_USE:
+            user_id = await getDiscordId(data.current_user)
+            discord_user = await bot.fetch_user(user_id)
+            return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by {discord_user.mention} until {data.expiry.strftime('%H:%M:%S')}"
+        case HostStatus.AWAITING:
+            return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
+
+async def generate_embed():
+    heartbeats = await valkey.get_all_heartbeats()
+    host_string_tasks = [pretty_format_host(host) for host in heartbeats]
+    template_vars = {
+        'hosts': await asyncio.gather(*host_string_tasks),
+        'queue': await valkey.get_all_waiting_users(),
+        'now': datetime.now(),
+    }
+    logger.debug(template_vars)
+    embed_json = template.render(template_vars)
+    return discord.Embed.from_dict(json.loads(embed_json))
+
+@tasks.loop(seconds=3)
+async def update_status_messages():
+    status_messages = await bot_db.getStatusMessages()
+    embed = await generate_embed()
+    for channelId, messageId in status_messages:
+        try:
+            channel = await bot.fetch_channel(channelId)
+            message = await channel.fetch_message(messageId)
+            await message.edit(embeds=[embed])
+        except discord.NotFound as e:
+            logger.error(f"Status message {messageId} in channel {channelId} not found: {e}, removing from database.")
+            # TODO: Remove from database
+            pass
+        except Exception as e:
+            logger.error(f"Error updating status message {messageId} in channel {channelId}: {e}")
+            logger.error(f"Current variables: embed={embed}, status_messages={status_messages},")
+
+@bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
+@discord.default_permissions(manage_guild=True)
+async def create_status_message(ctx):
+    embed = await generate_embed()
+    try:
+        msg = await ctx.channel.send(embeds=[embed])
+        await bot_db.registerStatusMessage(msg.channel.id, msg.id)
+        await ctx.respond("Message created succesfully")
+    except aiosqlite.Error as e:
+        ctx.respond(f"Error creating message: {e}")
+        logger.error(f"Error creating message: {e}")
 
 
 load_dotenv()

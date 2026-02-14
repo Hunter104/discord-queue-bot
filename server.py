@@ -4,8 +4,7 @@ import os
 import socket
 from datetime import datetime, timedelta
 
-import common
-from enum import Enum
+from common import HostStatus, HeartbeatData, PopNotification
 
 from discord.ui import user_select
 from dotenv import load_dotenv
@@ -16,11 +15,10 @@ import valkey
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
-class HostStatus(Enum):
-    AWAITING = "AWAITING"
-    IN_USE = "IN_USE"
 
 _POLLING_INTERVAL = 5
+_HEARTBEAT_TIMEOUT = 10
+
 class HostController:
     def __init__(self, name: str, whitelist_path: str, time_slice: timedelta):
         self.name = name
@@ -48,8 +46,6 @@ class HostController:
         logger.info(f"Processing user {user}...")
 
         await self._set_user(user, datetime.now() + self.time_slice)
-
-        await valkey.send_notification(common.PopNotification(self.name, user))
         await valkey.finish_processing(self.name, user, expiry=self.expiry)
 
     async def _set_user(self, user: str, expiry: datetime):
@@ -113,6 +109,21 @@ class HostController:
 
             await asyncio.sleep(_POLLING_INTERVAL)
 
+    async def send_heartbeat_loop(self):
+        logger.info("Starting heartbeat loop")
+        while not self._shutdown.is_set():
+            await valkey.send_heartbeat(
+                                        HeartbeatData(
+                                            self.name,
+                                            self.status,
+                                            self.expiry,
+                                            self.current_user,
+                                            datetime.now()
+                                        ),
+                                        timedelta(seconds=_HEARTBEAT_TIMEOUT))
+            await asyncio.sleep(_HEARTBEAT_TIMEOUT/2)
+
+
     async def shutdown(self):
         logger.info("Shutting down host controller...")
         self._shutdown.set()
@@ -138,6 +149,7 @@ class HostController:
 
             await asyncio.gather(
                 self.fetch_user_loop(),
+                self.send_heartbeat_loop(),
             )
         except asyncio.CancelledError:
             pass

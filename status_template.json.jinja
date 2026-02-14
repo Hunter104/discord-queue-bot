@@ -3,7 +3,7 @@
   "fields": [
     {
       "name": "Connected Hosts",
-      "value": "{% if hosts %}{% for host in hosts %}\n- {{ host.hostname }} - {% if host.status.value == 'IN_USE' %}🔴 IN USE until <t:{{ host.expiry.timestamp() | int }}:F>{% else %}🟢 Awaiting{% endif %}\n{% endfor %}{% else %}None{% endif %}"
+      "value": "{% if hosts %}{% for host_str in hosts %}- {{ host_str }}\n{% endfor %}{% else %}None{% endif %}"
     },
     {
       "name": "Queue",

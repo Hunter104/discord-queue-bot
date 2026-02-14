@@ -15,7 +15,7 @@ from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
 
 import common
-from common import PopNotification, SlotData
+from common import PopNotification, SlotData, HeartbeatData
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +62,7 @@ class AddReturnCode(enum.Enum):
 def configure(host, port):
     global _config
     _config = GlideClientConfiguration([NodeAddress(host, port)], request_timeout=500)
+    logger.info(f"Configured client for {host}:{port}")
 
 P = ParamSpec('P')
 R = TypeVar('R')
@@ -69,21 +70,25 @@ R = TypeVar('R')
 _NOTIFICATIONS_QUEUE_KEY = 'notifs'
 _WAITING_QUEUE_KEY = 'waiting_queue'
 
-_HOST_KEY_PREFIX = 'rpi:'
-_PROCESSING_QUEUE_KEY_SUFFIX = ':processing'
-_HOST_SLOT_KEY_SUFFIX = ':slot'
+_HOST_KEY_PREFIX = 'rpi'
+_PROCESSING_QUEUE_KEY_SUFFIX = 'processing'
+_HOST_SLOT_KEY_SUFFIX = 'slot'
+_HOST_HEARTBEAT_SUFFIX = 'heartbeat'
 
-_USER_KEY_PREFIX = 'user:'
-_USER_ASSIGNMENT_KEY_SUFFIX = ':assigned_to'
+_USER_KEY_PREFIX = 'user'
+_USER_ASSIGNMENT_KEY_SUFFIX = 'assigned_to'
 
 def get_host_slot_key(hostname: str) -> str:
-    return f'{_HOST_KEY_PREFIX}{hostname}{_HOST_SLOT_KEY_SUFFIX}'
+    return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_SLOT_KEY_SUFFIX}'
 
 def get_processing_queue_key(hostname: str) -> str:
-    return f'{_HOST_KEY_PREFIX}{hostname}{_PROCESSING_QUEUE_KEY_SUFFIX}'
+    return f'{_HOST_KEY_PREFIX}:{hostname}:{_PROCESSING_QUEUE_KEY_SUFFIX}'
 
 def get_user_assigned_host_key(username: str) -> str:
-    return f'{_USER_KEY_PREFIX}{username}{_USER_ASSIGNMENT_KEY_SUFFIX}'
+    return f'{_USER_KEY_PREFIX}:{username}:{_USER_ASSIGNMENT_KEY_SUFFIX}'
+
+def get_host_heartbeat(hostname: str):
+    return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_HEARTBEAT_SUFFIX}'
 
 
 # TODO: maybe not efficient
@@ -138,6 +143,31 @@ async def pop_notification_blocking(client: GlideClient) -> PopNotification | No
         return None
     return msgspec.json.decode(raw[1].decode(), type=PopNotification)
 
+@with_client
+async def get_all_heartbeats(client: GlideClient) -> list[common.HeartbeatData]:
+    heartbeats = []
+    cursor = '0'
+    while True:
+        cursor, vals = await client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
+        if vals is None or len(vals) == 0:
+            break
+        decoded_vals = [val.decode() for val in vals]
+        raw_heartbeats = await client.mget(decoded_vals)
+        heartbeats.extend([msgspec.json.decode(raw.decode(), type=HeartbeatData) for raw in raw_heartbeats])
+
+        if cursor.decode() == '0':
+            break
+
+    return heartbeats
+
+
+@with_client
+async def get_heartbeat(client: GlideClient, hostname: str) -> common.HeartbeatData | None:
+    raw = await client.get(get_host_heartbeat(hostname))
+    if raw is None:
+        return None
+    return msgspec.json.decode(raw.decode(), type=common.HeartbeatData)
+
 ####################
 #  HOST FUNCTIONS  #
 ####################
@@ -191,3 +221,9 @@ async def release_user(client: GlideClient, hostname: str):
 @with_client
 async def send_notification(client: GlideClient, data: PopNotification):
     return await client.lpush(_NOTIFICATIONS_QUEUE_KEY, [msgspec.json.encode(data)])
+
+@with_client
+async def send_heartbeat(client: GlideClient, data: common.HeartbeatData, expiry: datetime.timedelta):
+    return await client.set(get_host_heartbeat(data.hostname),
+                            msgspec.json.encode(data),
+                            expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=expiry))
