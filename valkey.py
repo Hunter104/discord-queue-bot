@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import enum
 import functools
 import json
 import os
@@ -20,11 +21,19 @@ _ADD_USER_SCRIPT = Script("""
     if server.call("lpos", KEYS[1], ARGV[1]) then
         return 1
     end
+    if server.call("sismember", KEYS[2], ARGV[1]) == 1 then
+        return 2
+    end
     server.call("lpush", KEYS[1], ARGV[1])
     return 0
 """)
 
 _config: GlideClientConfiguration | None = None
+
+class AddReturnCode(enum.Enum):
+    ALREADY_IN_QUEUE = 1
+    ALREADY_ASSIGNED = 2
+    SUCCESS = 0
 
 def configure(host, port):
     global _config
@@ -46,8 +55,9 @@ def with_client(func: Callable[Concatenate[GlideClient, P], Awaitable[R]]) -> Ca
     return wrapper
 
 @with_client
-async def addUser(client: GlideClient, username: str):
-    return await client.invoke_script(_ADD_USER_SCRIPT, ['queue'], [username]) == 0
+async def addUser(client: GlideClient, username: str) -> AddReturnCode:
+    ret = await client.invoke_script(_ADD_USER_SCRIPT, ['queue', 'assigned'], [username])
+    return AddReturnCode(ret)
 
 @with_client
 async def popBlocking(client:GlideClient) -> str | None:
@@ -55,6 +65,14 @@ async def popBlocking(client:GlideClient) -> str | None:
     if res is None:
         return None
     return res[1].decode()
+
+@with_client
+async def markUserAsAssigned(client: GlideClient, unix_user: str):
+    await client.sadd('assigned', [unix_user])
+
+@with_client
+async def unmarkUserAsAssigned(client: GlideClient, unix_user: str):
+    await client.srem('assigned', [unix_user])
 
 @with_client
 async def removeUser(client: GlideClient, user_id: int):

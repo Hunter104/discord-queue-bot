@@ -18,7 +18,7 @@ import valkey
 from valkey import addUser, removeUser, getAll
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -65,10 +65,14 @@ async def join_queue(ctx):
         await ctx.respond("You have not been registered, please contact your administrator")
         return
 
-    if await addUser(unix_user):
-        await ctx.respond("You have been added to the queue.")
-    else:
-        await ctx.respond("You are already in the queue.")
+    ret = await addUser(unix_user)
+    match ret:
+        case valkey.AddReturnCode.ALREADY_IN_QUEUE:
+            await ctx.respond("You are already in the queue.")
+        case valkey.AddReturnCode.ALREADY_ASSIGNED:
+            await ctx.respond("You are already assigned to a host.")
+        case valkey.AddReturnCode.SUCCESS:
+            await ctx.respond("You have been added to the queue.")
 
 @bot.slash_command(name="leave_queue", description="Leave the queue")
 async def leave_queue(ctx):
@@ -149,7 +153,7 @@ async def generateEmbed():
     embed_json = template.render(template_vars)
     return discord.Embed.from_dict(json.loads(embed_json))
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=3)
 async def update_status_messages():
     logger.info("Updating status messages")
     status_messages = await bot_db.getStatusMessages()

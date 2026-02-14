@@ -53,6 +53,7 @@ class HostController:
         self.set_whitelist([user])
 
         self._expiry_task = asyncio.create_task(self._expiry_timer())
+        await valkey.markUserAsAssigned(user)
 
     async def release_user(self):
         if not self.current_user:
@@ -64,9 +65,12 @@ class HostController:
 
         # TODO: Remove SSH sessions
 
+        await valkey.unmarkUserAsAssigned(self.current_user)
         self.current_user = None
         self.status = STATUS.AWAITING
         self.expiry = datetime.max
+
+        # TODO: get order of statements right
 
     async def _expiry_timer(self):
         try:
