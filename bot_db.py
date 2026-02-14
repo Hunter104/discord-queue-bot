@@ -35,3 +35,8 @@ async def getStatusMessages():
     async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
         async with conn.execute("SELECT channelId, messageId FROM StatusMessages;") as cursor:
             return await cursor.fetchall()
+
+async def removeStatusMessage(channelId):
+    async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
+        await conn.execute("DELETE FROM StatusMessages WHERE channelId = ?", (channelId,))
+        await conn.commit()

@@ -173,8 +173,7 @@ async def update_status_messages():
             await message.edit(embeds=[embed])
         except discord.NotFound as e:
             logger.error(f"Status message {messageId} in channel {channelId} not found: {e}, removing from database.")
-            # TODO: Remove from database
-            pass
+            await bot_db.removeStatusMessage(channelId)
         except Exception as e:
             logger.error(f"Error updating status message {messageId} in channel {channelId}: {e}")
             logger.error(f"Current variables: embed={embed}, status_messages={status_messages},")
