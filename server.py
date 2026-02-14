@@ -5,7 +5,6 @@ import socket
 from datetime import datetime, timedelta
 
 import common
-from common import STATUS
 from enum import Enum
 
 from discord.ui import user_select
@@ -15,16 +14,20 @@ from numpy.f2py.crackfortran import usermodules
 import valkey
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
+class HostStatus(Enum):
+    AWAITING = "AWAITING"
+    IN_USE = "IN_USE"
 
+_POLLING_INTERVAL = 5
 class HostController:
-    def __init__(self, name: str, whitelist_path: str, valkey_client, time_slice: timedelta):
+    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta):
         self.name = name
         self.whitelist_path = whitelist_path
         self.time_slice = time_slice
 
-        self.status = STATUS.AWAITING
+        self.status = HostStatus.AWAITING
         self.current_user: str | None = None
         self.expiry: datetime = datetime.max
 
@@ -41,19 +44,24 @@ class HostController:
         with open(self.whitelist_path, "w") as f:
             f.write("\n".join(whitelist))
 
-    async def assign_user(self, user: str):
-        logger.info(f"Assigning user {user}")
+    async def process_user(self, user: str):
+        logger.info(f"Processing user {user}...")
 
+        await self._set_user(user, datetime.now() + self.time_slice)
+
+        await valkey.send_notification(common.PopNotification(self.name, user))
+        await valkey.finish_processing(self.name, user, expiry=self.expiry)
+
+    async def _set_user(self, user: str, expiry: datetime):
+        logger.info(f"Setting user {user} as in use")
         self.current_user = user
-        self.status = STATUS.IN_USE
-        self.expiry = datetime.now() + self.time_slice
-
-        await valkey.sendNotification(common.PopNotification(self.name, user))
+        self.status = HostStatus.IN_USE
+        self.expiry = expiry
 
         self.set_whitelist([user])
 
         self._expiry_task = asyncio.create_task(self._expiry_timer())
-        await valkey.markUserAsAssigned(user)
+
 
     async def release_user(self):
         if not self.current_user:
@@ -65,48 +73,45 @@ class HostController:
 
         # TODO: Remove SSH sessions
 
-        await valkey.unmarkUserAsAssigned(self.current_user)
+        user = self.current_user
         self.current_user = None
-        self.status = STATUS.AWAITING
+        self.status = HostStatus.AWAITING
         self.expiry = datetime.max
 
-        # TODO: get order of statements right
+        await valkey.release_user(user)
 
+
+    # TODO: maybe this has some synchronization problems with the fetch user loop
     async def _expiry_timer(self):
         try:
-            await asyncio.sleep(self.time_slice.total_seconds())
-            await self.release_user()
+            sleep_period = self.expiry - datetime.now()
+            if sleep_period <= timedelta(0):
+                logger.warning(f"Expiration date {self.expiry} has already been reached for user {self.current_user}")
+                await self.release_user()
+            else:
+                logger.info(f"User {self.current_user} will expire in {sleep_period}")
+                logger.info(f"Sleeping for {sleep_period.total_seconds()} seconds")
+                await asyncio.sleep(sleep_period.total_seconds())
+                await self.release_user()
         except asyncio.CancelledError:
             logger.info("Expiry timer cancelled")
             raise
 
     async def fetch_user_loop(self):
-        while not self._shutdown.is_set():
-            if self.status == STATUS.AWAITING:
-                logger.info("Waiting for user...")
+        if self.status == HostStatus.IN_USE:
+            logger.info("In use, waiting for session end")
+        elif self.status == HostStatus.AWAITING:
+            logger.info("Waiting for user...")
+        else:
+            logger.warning("Unkown state %s", self.status)
 
-                user = await valkey.popBlocking()
+        while not self._shutdown.is_set():
+            if self.status == HostStatus.AWAITING:
+                user = await valkey.pop_waiting(self.name)
                 if user:
-                    await self.assign_user(user)
+                    await self.process_user(user)
 
-            await asyncio.sleep(1)
-
-    async def update_status_loop(self):
-        while not self._shutdown.is_set():
-            await valkey.setHostStatus(common.HostStatus(
-                self.name,
-                self.status,
-                self.expiry,
-                self.current_user,
-            ))
-            await asyncio.sleep(common.STATUS_UPDATE_INTERVAL)
-
-    async def recover_last_state(self):
-        last_state = await valkey.getHostStatus(self.name)
-        if last_state:
-            self.status = last_state.status
-            self.expiry = last_state.expiry
-            self.current_user = last_state.current_user
+            await asyncio.sleep(_POLLING_INTERVAL)
 
     async def shutdown(self):
         logger.info("Shutting down host controller...")
@@ -119,13 +124,20 @@ class HostController:
             except asyncio.CancelledError:
                 pass
 
-        await self.release_user()
-
     async def run(self):
         try:
+            # Recover the last user if the server stopped before finishing processing
+            last_user = await valkey.peek_processing_queue(self.name)
+            if last_user:
+                await self.process_user(last_user)
+
+            # Recover the current slot if the server stopped while serving a user
+            slot = await valkey.get_slot(self.name)
+            if slot:
+                await self._set_user(slot.current_user, slot.expiry)
+
             await asyncio.gather(
                 self.fetch_user_loop(),
-                self.update_status_loop(),
             )
         except asyncio.CancelledError:
             pass
@@ -137,7 +149,7 @@ async def main():
     load_dotenv()
 
     time_slice = timedelta(
-        seconds=int(os.getenv("TIME_SLICE", 600))
+        seconds=int(os.getenv("TIME_SLICE", 10*60))
     )
 
     name = socket.gethostname()
@@ -151,7 +163,6 @@ async def main():
     controller = HostController(
         name=name,
         whitelist_path=whitelist_path,
-        valkey_client=valkey,
         time_slice=time_slice,
     )
 
