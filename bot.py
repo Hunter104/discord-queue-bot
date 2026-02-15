@@ -30,12 +30,13 @@ intents.members = True
 
 bot = discord.Bot(intents=intents)
 
-TEMPLATE_FILE="status_template.json.jinja"
+TEMPLATE_FILE = "status_template.json.jinja"
 templateLoader = jinja2.FileSystemLoader(searchpath=".")
 templateEnv = jinja2.Environment(loader=templateLoader)
 template = templateEnv.get_template(TEMPLATE_FILE)
 
 config = GlideClientConfiguration([NodeAddress(os.environ["VALKEY_HOST"], int(os.environ["VALKEY_PORT"]))])
+
 
 async def generate_embed():
     async with get_connection(config) as valkey_conn:
@@ -55,54 +56,63 @@ async def generate_embed():
     embed_json = template.render(template_vars)
     return discord.Embed.from_dict(json.loads(embed_json))
 
+
 @tasks.loop(seconds=1)
 async def update_status_messages():
     status_messages = await bot_db.get_status_messages()
     embed = await generate_embed()
     for channelId, messageId in status_messages:
         try:
-            # Check the cache first to minimize rate limit risk
             channel = bot.get_channel(channelId)
             if channel is None:
                 channel = await bot.fetch_channel(channelId)
             message = await channel.fetch_message(messageId)
             await message.edit(embeds=[embed])
-        except discord.NotFound as e:
-            logger.error(f"Status message {messageId} in channel {channelId} not found: {e}, removing from database.")
+        except discord.NotFound:
+            logger.exception(
+                "Status message %s in channel %s not found, removing from database.",
+                messageId,
+                channelId,
+            )
             await bot_db.remove_status_message(channelId)
-        except Exception as e:
-            logger.error(f"Error updating status message {messageId} in channel {channelId}: {e}")
-            logger.error(f"Current variables: embed={embed}, status_messages={status_messages},")
+        except Exception:
+            logger.exception(
+                "Error updating status message %s in channel %s",
+                messageId,
+                channelId,
+            )
+
 
 @tasks.loop(seconds=1)
 async def read_notifications():
     async with get_connection(config) as conn:
         data = await conn.pop_notification_blocking()
 
-    # TODO: temporary, get discord user from unix via db query
-    logger.info(f"Got notification: {data}")
+    logger.info("Got notification: %s", data)
     unix_user = data.unix_user
     discord_id = await get_discord_id(unix_user)
     if discord_id is None:
-        logger.error(f"Unix user {unix_user} not registered.")
+        logger.exception("Unix user %s not registered.", unix_user)
         return
 
     discord_user = bot.get_user(discord_id)
     if discord_user is None:
-        logger.error(f"Could not find discord user for id {discord_id}")
+        logger.exception("Could not find discord user for id %s", discord_id)
         return
 
     await discord_user.send(f'You have been assigned to host {data.hostname}.')
 
+
 @bot.event
 async def on_ready():
-    logger.info(f'Logged in as {bot.user}')
+    logger.info("Logged in as %s", bot.user)
 
-    logger.info('Starting notification reading loop')
+    logger.info("Starting notification reading loop")
     read_notifications.start()
 
-    logger.info('Starting status message update loop')
+    logger.info("Starting status message update loop")
     update_status_messages.start()
+
 
 @bot.slash_command(name="join_queue", description="Join the queue")
 async def join_queue(ctx):
@@ -121,6 +131,7 @@ async def join_queue(ctx):
             case valkey.AddReturnCode.SUCCESS:
                 await ctx.respond("You have been added to the queue.")
 
+
 @bot.slash_command(name="leave_queue", description="Leave the queue")
 async def leave_queue(ctx):
     unix_user = await get_unix_user(ctx.author.id)
@@ -133,6 +144,7 @@ async def leave_queue(ctx):
             await ctx.respond("You have been removed from the queue.")
         else:
             await ctx.respond("You are not in the queue.")
+
 
 @bot.slash_command(name="remove_from_queue", description="Admin: remove a user from the queue")
 @discord.default_permissions(manage_guild=True)
@@ -147,41 +159,37 @@ async def remove_from_queue(ctx, unix_user: discord.User):
         else:
             await ctx.respond(f"⚠️ {unix_user.mention} is not in the queue.")
 
+
 @bot.slash_command(name="register_user", description="Admin: register user into the system")
 @discord.default_permissions(manage_guild=True)
 async def register_user(ctx, user: discord.User, unix_user: str):
-    try:
-        await register_user(user.id, unix_user)
-        ctx.respond("User registered successfully.")
-    except aiosqlite.Error as e:
-        ctx.respond(f"Error registering user: {e}")
-        logger.error(f"Error registering user: {e}")
+    await register_user(user.id, unix_user)
+    ctx.respond("User registered successfully.")
+
 
 async def pretty_format_host(data: HeartbeatData) -> str:
     match data.status:
         case HostStatus.IN_USE:
             user_id = await get_discord_id(data.current_user)
-            # REQUIRES GUILD MEMBERS INTENT
             discord_user = bot.get_user(user_id)
             return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by {discord_user.mention} until {data.expiry.strftime('%H:%M:%S')}"
         case HostStatus.AWAITING:
             return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
 
+
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
 async def create_status_message(ctx):
     embed = await generate_embed()
-    try:
-        msg = await ctx.channel.send(embeds=[embed])
-        await bot_db.register_status_message(msg.channel.id, msg.id)
-        await ctx.respond("Message created successfully.")
-    except aiosqlite.Error as e:
-        ctx.respond(f"Error creating message: {e}")
-        logger.error(f"Error creating message: {e}")
+    msg = await ctx.channel.send(embeds=[embed])
+    await bot_db.register_status_message(msg.channel.id, msg.id)
+    await ctx.respond("Message created successfully.")
+
 
 @bot.event
 async def on_application_command_error(ctx: discord.ApplicationContext, error: discord.DiscordException):
-    await ctx.respond(f"There was an error while processing your request, please contact your administrator")
-    raise error  # Here we raise other errors to ensure they aren't ignored
+    await ctx.respond("There was an error while processing your request, please contact your administrator")
+    raise error
+
 
 bot.run(os.environ["BOT_TOKEN"])
