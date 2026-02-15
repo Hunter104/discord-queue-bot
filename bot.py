@@ -25,7 +25,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-bot = discord.Bot(intents=discord.Intents.all())
+intents = discord.Intents.default()
+intents.members = True
+
+bot = discord.Bot(intents=intents)
 
 TEMPLATE_FILE="status_template.json.jinja"
 templateLoader = jinja2.FileSystemLoader(searchpath=".")
