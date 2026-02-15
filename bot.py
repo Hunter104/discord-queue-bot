@@ -144,9 +144,9 @@ async def remove_from_queue(ctx, unix_user: discord.User):
         else:
             await ctx.respond(f"⚠️ {unix_user.mention} is not in the queue.")
 
-@bot.slash_command(name="register", description="Admin: register user into the system")
+@bot.slash_command(name="register_user", description="Admin: register user into the system")
 @discord.default_permissions(manage_guild=True)
-async def register(ctx, user: discord.User, unix_user: str):
+async def register_user(ctx, user: discord.User, unix_user: str):
     try:
         await register_user(user.id, unix_user)
         ctx.respond("User registered successfully.")
