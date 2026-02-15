@@ -75,12 +75,6 @@ async def update_status_messages():
                 channelId,
             )
             await bot_db.remove_status_message(channelId)
-        except Exception:
-            logger.exception(
-                "Error updating status message %s in channel %s",
-                messageId,
-                channelId,
-            )
 
 
 @tasks.loop(seconds=1)
