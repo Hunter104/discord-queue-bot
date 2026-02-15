@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-bot = discord.Bot()
+bot = discord.Bot(intents=discord.Intents.all())
 
 TEMPLATE_FILE="status_template.json.jinja"
 templateLoader = jinja2.FileSystemLoader(searchpath=".")
@@ -46,10 +46,12 @@ async def read_notifications():
     if discord_id is None:
         logger.error(f"Unix user {unix_user} not registered.")
         return
-    discord_user = await bot.fetch_user(discord_id)
+
+    discord_user = bot.get_user(discord_id)
     if discord_user is None:
         logger.error(f"Could not find discord user for id {discord_id}")
         return
+
     await discord_user.send(f'You have been assigned to host {data.hostname}.')
 
 @bot.event
@@ -105,18 +107,12 @@ async def queue_status(ctx):
         discord_id_by_hostname = await bot_db.get_discord_id_by_hostname()
         for idx, user_id in enumerate(queue, start=1):
             discord_id = discord_id_by_hostname.get(user_id)
+            # NEEDS GUILD MEMBERS INTENT
             user = bot.get_user(discord_id)
 
             if user is None:
-                try:
-                    user = await bot.fetch_user(discord_id)
-                except discord.NotFound:
-                    lines.append(f"{idx}. ❌ Unknown user (`{discord_id}`)")
-                    await conn.remove_waiting_user(user_id)
-                    continue
-                except discord.HTTPException:
-                    lines.append(f"{idx}. ⚠️ Error fetching user (`{discord_id}`)")
-                    continue
+                lines.append(f"{idx}. ❌ Unknown user (`{discord_id}`)")
+                continue
 
             lines.append(f"{idx}. {user.name} ({user.mention})")
 
@@ -149,7 +145,8 @@ async def pretty_format_host(data: HeartbeatData) -> str:
     match data.status:
         case HostStatus.IN_USE:
             user_id = await get_discord_id(data.current_user)
-            discord_user = await bot.fetch_user(user_id)
+            # REQUIRES GUILD MEMBERS INTENT
+            discord_user = bot.get_user(user_id)
             return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by {discord_user.mention} until {data.expiry.strftime('%H:%M:%S')}"
         case HostStatus.AWAITING:
             return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
@@ -167,13 +164,16 @@ async def generate_embed():
     embed_json = template.render(template_vars)
     return discord.Embed.from_dict(json.loads(embed_json))
 
-@tasks.loop(seconds=3)
+@tasks.loop(seconds=1)
 async def update_status_messages():
     status_messages = await bot_db.get_status_messages()
     embed = await generate_embed()
     for channelId, messageId in status_messages:
         try:
-            channel = await bot.fetch_channel(channelId)
+            # Check the cache first to minimize rate limit risk
+            channel = bot.get_channel(channelId)
+            if channel is None:
+                channel = await bot.fetch_channel(channelId)
             message = await channel.fetch_message(messageId)
             await message.edit(embeds=[embed])
         except discord.NotFound as e:
