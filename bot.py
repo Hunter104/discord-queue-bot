@@ -92,12 +92,12 @@ async def read_notifications():
     unix_user = data.unix_user
     discord_id = await get_discord_id(unix_user)
     if discord_id is None:
-        logger.exception("Unix user %s not registered.", unix_user)
+        logger.error("Unix user %s not registered.", unix_user)
         return
 
     discord_user = bot.get_user(discord_id)
     if discord_user is None:
-        logger.exception("Could not find discord user for id %s", discord_id)
+        logger.error("Could not find discord user for id %s", discord_id)
         return
 
     await discord_user.send(f'You have been assigned to host {data.hostname}.')
@@ -148,10 +148,10 @@ async def leave_queue(ctx):
 
 @bot.slash_command(name="remove_from_queue", description="Admin: remove a user from the queue")
 @discord.default_permissions(manage_guild=True)
-async def remove_from_queue(ctx, unix_user: discord.User):
-    unix_user = await get_discord_id(unix_user.id)
-    if unix_user is None:
-        await ctx.respond(f"User {unix_user} is not registered, please contact your administrator")
+async def remove_from_queue(ctx, discord_user: discord.User):
+    unix_user = await get_unix_user(discord_user.id)
+    if discord_user is None:
+        await ctx.respond(f"User {discord_user} is not registered, please contact your administrator")
 
     async with get_connection(config) as conn:
         if await conn.remove_waiting_user(unix_user):
