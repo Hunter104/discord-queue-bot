@@ -34,6 +34,43 @@ template = templateEnv.get_template(TEMPLATE_FILE)
 
 config = GlideClientConfiguration([NodeAddress(os.environ["VALKEY_HOST"], int(os.environ["VALKEY_PORT"]))])
 
+async def generate_embed():
+    async with get_connection(config) as valkey_conn:
+        heartbeats = await valkey_conn.get_all_heartbeats()
+        host_string_tasks = [pretty_format_host(host) for host in heartbeats]
+        waiting_unix_users = await valkey_conn.get_all_waiting_users()
+        discord_id_by_hostname = await bot_db.get_discord_id_by_hostname()
+
+        waiting_discord_users = [discord_id_by_hostname.get(unix_user) for unix_user in waiting_unix_users]
+
+        template_vars = {
+            'hosts': await asyncio.gather(*host_string_tasks),
+            'queue': waiting_discord_users,
+            'now': datetime.now(),
+        }
+    logger.debug(template_vars)
+    embed_json = template.render(template_vars)
+    return discord.Embed.from_dict(json.loads(embed_json))
+
+@tasks.loop(seconds=1)
+async def update_status_messages():
+    status_messages = await bot_db.get_status_messages()
+    embed = await generate_embed()
+    for channelId, messageId in status_messages:
+        try:
+            # Check the cache first to minimize rate limit risk
+            channel = bot.get_channel(channelId)
+            if channel is None:
+                channel = await bot.fetch_channel(channelId)
+            message = await channel.fetch_message(messageId)
+            await message.edit(embeds=[embed])
+        except discord.NotFound as e:
+            logger.error(f"Status message {messageId} in channel {channelId} not found: {e}, removing from database.")
+            await bot_db.remove_status_message(channelId)
+        except Exception as e:
+            logger.error(f"Error updating status message {messageId} in channel {channelId}: {e}")
+            logger.error(f"Current variables: embed={embed}, status_messages={status_messages},")
+
 @tasks.loop(seconds=1)
 async def read_notifications():
     async with get_connection(config) as conn:
@@ -150,38 +187,6 @@ async def pretty_format_host(data: HeartbeatData) -> str:
             return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by {discord_user.mention} until {data.expiry.strftime('%H:%M:%S')}"
         case HostStatus.AWAITING:
             return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
-
-async def generate_embed():
-    async with get_connection(config) as conn:
-        heartbeats = await conn.get_all_heartbeats()
-        host_string_tasks = [pretty_format_host(host) for host in heartbeats]
-        template_vars = {
-            'hosts': await asyncio.gather(*host_string_tasks),
-            'queue': await conn.get_all_waiting_users(),
-            'now': datetime.now(),
-        }
-    logger.debug(template_vars)
-    embed_json = template.render(template_vars)
-    return discord.Embed.from_dict(json.loads(embed_json))
-
-@tasks.loop(seconds=1)
-async def update_status_messages():
-    status_messages = await bot_db.get_status_messages()
-    embed = await generate_embed()
-    for channelId, messageId in status_messages:
-        try:
-            # Check the cache first to minimize rate limit risk
-            channel = bot.get_channel(channelId)
-            if channel is None:
-                channel = await bot.fetch_channel(channelId)
-            message = await channel.fetch_message(messageId)
-            await message.edit(embeds=[embed])
-        except discord.NotFound as e:
-            logger.error(f"Status message {messageId} in channel {channelId} not found: {e}, removing from database.")
-            await bot_db.remove_status_message(channelId)
-        except Exception as e:
-            logger.error(f"Error updating status message {messageId} in channel {channelId}: {e}")
-            logger.error(f"Current variables: embed={embed}, status_messages={status_messages},")
 
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
