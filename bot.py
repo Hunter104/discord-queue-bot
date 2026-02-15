@@ -45,11 +45,11 @@ async def generate_embed():
         waiting_unix_users = await valkey_conn.get_all_waiting_users()
         discord_id_by_hostname = await bot_db.get_discord_id_by_hostname()
 
-        waiting_discord_users = [discord_id_by_hostname.get(unix_user) for unix_user in waiting_unix_users]
+        discord_ids = [discord_id_by_hostname.get(unix_user) for unix_user in waiting_unix_users]
 
         template_vars = {
             'hosts': await asyncio.gather(*host_string_tasks),
-            'queue': waiting_discord_users,
+            'queue': discord_ids,
             'now': datetime.now(),
         }
     logger.debug(template_vars)
@@ -94,6 +94,7 @@ async def read_notifications():
         logger.error("Could not find discord user for id %s", discord_id)
         return
 
+    # TODO: talvez mandar num canal específico
     await discord_user.send(f'You have been assigned to host {data.hostname}.')
 
 
@@ -165,8 +166,7 @@ async def pretty_format_host(data: HeartbeatData) -> str:
     match data.status:
         case HostStatus.IN_USE:
             user_id = await get_discord_id(data.current_user)
-            discord_user = bot.get_user(user_id)
-            return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by {discord_user.mention} until {data.expiry.strftime('%H:%M:%S')}"
+            return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {data.expiry.strftime('%H:%M:%S')}"
         case HostStatus.AWAITING:
             return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
 

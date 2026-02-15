@@ -7,11 +7,11 @@
     },
     {
       "name": "Queue",
-      "value": "{% if queue %}{% for user in queue %}\n- {{ user }}\n{% endfor %}{% else %}None{% endif %}"
+      "value": "{% if queue %}{% for user in queue %}\n- <@{{ user }}>\n{% endfor %}{% else %}None{% endif %}"
     },
     {
       "name": "Next up",
-      "value": "{{ queue[0] if queue else 'None' }}"
+      "value": "{{ '<@' ~ queue[0] ~ '>' if queue else 'None' }}"
     }
   ],
   "title": "Current Queue Status",
