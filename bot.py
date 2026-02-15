@@ -195,5 +195,9 @@ async def create_status_message(ctx):
         ctx.respond(f"Error creating message: {e}")
         logger.error(f"Error creating message: {e}")
 
+@bot.event
+async def on_application_command_error(ctx: discord.ApplicationContext, error: discord.DiscordException):
+    await ctx.respond(f"There was an error while processing your request, please contact your administrator")
+    raise error  # Here we raise other errors to ensure they aren't ignored
 
 bot.run(os.environ["BOT_TOKEN"])
