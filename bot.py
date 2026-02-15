@@ -101,10 +101,10 @@ async def queue_status(ctx):
             await ctx.respond("The queue is currently empty.")
             return
 
-        # TODO: Create an sql query for this unoptimized loop
         lines = []
+        discord_id_by_hostname = await bot_db.get_discord_id_by_hostname()
         for idx, user_id in enumerate(queue, start=1):
-            discord_id = await get_discord_id(user_id)
+            discord_id = discord_id_by_hostname.get(user_id)
             user = bot.get_user(discord_id)
 
             if user is None:

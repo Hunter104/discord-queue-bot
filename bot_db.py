@@ -1,6 +1,9 @@
+from typing import Dict
+
 import aiosqlite
 import os
 
+# TODO: inject connection as dependency
 
 async def get_unix_user(discord_user_id):
     async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
@@ -20,6 +23,13 @@ async def get_discord_id(unix_user):
                 return result[0]
             else:
                 return None
+
+async def get_discord_id_by_hostname() -> Dict[str, int]:
+    async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
+        async with conn.execute("SELECT unixUser, discordId From Users") as cursor:
+            result = await cursor.fetchall()
+            return dict(result)
+
 
 async def register_user(discord_user_id, unix_user):
     async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
