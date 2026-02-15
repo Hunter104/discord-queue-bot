@@ -131,30 +131,6 @@ async def leave_queue(ctx):
         else:
             await ctx.respond("You are not in the queue.")
 
-@bot.slash_command(name="queue_status", description="Check the queue status")
-async def queue_status(ctx):
-    async with get_connection(config) as conn:
-        queue = await conn.get_all_waiting_users()
-
-        if not queue:
-            await ctx.respond("The queue is currently empty.")
-            return
-
-        lines = []
-        discord_id_by_hostname = await bot_db.get_discord_id_by_hostname()
-        for idx, user_id in enumerate(queue, start=1):
-            discord_id = discord_id_by_hostname.get(user_id)
-            # NEEDS GUILD MEMBERS INTENT
-            user = bot.get_user(discord_id)
-
-            if user is None:
-                lines.append(f"{idx}. ❌ Unknown user (`{discord_id}`)")
-                continue
-
-            lines.append(f"{idx}. {user.name} ({user.mention})")
-
-        await ctx.respond("Current Queue:\n" + "\n".join(lines))
-
 @bot.slash_command(name="remove_from_queue", description="Admin: remove a user from the queue")
 @discord.default_permissions(manage_guild=True)
 async def remove_from_queue(ctx, unix_user: discord.User):
