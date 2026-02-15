@@ -4,13 +4,16 @@ import os
 import socket
 from datetime import datetime, timedelta
 
+from glide_shared import NodeAddress
+
 from common import HostStatus, HeartbeatData, PopNotification
 
 from discord.ui import user_select
 from dotenv import load_dotenv
 from numpy.f2py.crackfortran import usermodules
+from glide import GlideClientConfiguration
 
-import valkey
+from valkey import ValkeyConnection, get_connection
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -20,7 +23,7 @@ _POLLING_INTERVAL = 5
 _HEARTBEAT_TIMEOUT = 10
 
 class HostController:
-    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta):
+    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, valkey_config: GlideClientConfiguration):
         self.name = name
         self.whitelist_path = whitelist_path
         self.time_slice = time_slice
@@ -32,6 +35,8 @@ class HostController:
         self._expiry_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
 
+        self._valkey_config = valkey_config
+
     def get_whitelist(self) -> list[str]:
         if not os.path.exists(self.whitelist_path):
             return []
@@ -42,11 +47,10 @@ class HostController:
         with open(self.whitelist_path, "w") as f:
             f.write("\n".join(whitelist))
 
-    async def process_user(self, user: str):
+    async def process_user(self, user: str, conn: ValkeyConnection):
         logger.info(f"Processing user {user}...")
-
         await self._set_user(user, datetime.now() + self.time_slice)
-        await valkey.finish_processing(self.name, user, expiry=self.expiry)
+        await conn.finish_processing(self.name, user, expiry=self.expiry)
 
     async def _set_user(self, user: str, expiry: datetime):
         logger.info(f"Setting user {user} as in use")
@@ -59,7 +63,7 @@ class HostController:
         self._expiry_task = asyncio.create_task(self._expiry_timer())
 
 
-    async def release_user(self):
+    async def release_user(self, conn: ValkeyConnection):
         if not self.current_user:
             return
 
@@ -74,7 +78,7 @@ class HostController:
         self.status = HostStatus.AWAITING
         self.expiry = datetime.max
 
-        await valkey.release_user(user)
+        await conn.release_user(user)
 
 
     # TODO: maybe this has some synchronization problems with the fetch user loop
@@ -103,25 +107,27 @@ class HostController:
 
         while not self._shutdown.is_set():
             if self.status == HostStatus.AWAITING:
-                user = await valkey.pop_waiting(self.name)
-                if user:
-                    await self.process_user(user)
+                async with get_connection(self._valkey_config) as conn:
+                    user = await conn.pop_waiting(self.name)
+                    if user:
+                        await self.process_user(user, conn)
 
             await asyncio.sleep(_POLLING_INTERVAL)
 
     async def send_heartbeat_loop(self):
         logger.info("Starting heartbeat loop")
         while not self._shutdown.is_set():
-            await valkey.send_heartbeat(
-                                        HeartbeatData(
-                                            self.name,
-                                            self.status,
-                                            self.expiry,
-                                            self.current_user,
-                                            datetime.now()
-                                        ),
-                                        timedelta(seconds=_HEARTBEAT_TIMEOUT))
-            await asyncio.sleep(_HEARTBEAT_TIMEOUT/2)
+            async with get_connection(self._valkey_config) as conn:
+                await conn.send_heartbeat(
+                                            HeartbeatData(
+                                                self.name,
+                                                self.status,
+                                                self.expiry,
+                                                self.current_user,
+                                                datetime.now()
+                                            ),
+                                            timedelta(seconds=_HEARTBEAT_TIMEOUT))
+                await asyncio.sleep(_HEARTBEAT_TIMEOUT/2)
 
 
     async def shutdown(self):
@@ -137,15 +143,16 @@ class HostController:
 
     async def run(self):
         try:
-            # Recover the last user if the server stopped before finishing processing
-            last_user = await valkey.peek_processing_queue(self.name)
-            if last_user:
-                await self.process_user(last_user)
+            async with get_connection(self._valkey_config) as valkey:
+                # Recover the last user if the server stopped before finishing processing
+                last_user = await valkey.peek_processing_queue(self.name)
+                if last_user:
+                    await self.process_user(last_user)
 
-            # Recover the current slot if the server stopped while serving a user
-            slot = await valkey.get_slot(self.name)
-            if slot:
-                await self._set_user(slot.current_user, slot.expiry)
+                # Recover the current slot if the server stopped while serving a user
+                slot = await valkey.get_slot(self.name)
+                if slot:
+                    await self._set_user(slot.current_user, slot.expiry)
 
             await asyncio.gather(
                 self.fetch_user_loop(),
@@ -167,15 +174,18 @@ async def main():
     name = socket.gethostname()
     whitelist_path = os.environ["WHITELIST_PATH"]
 
-    valkey.configure(
-        os.environ["VALKEY_HOST"],
-        int(os.environ["VALKEY_PORT"]),
+    config = GlideClientConfiguration(
+        [NodeAddress(
+            os.environ["VALKEY_HOST"],
+            int(os.environ["VALKEY_PORT"]),
+        )]
     )
 
     controller = HostController(
         name=name,
         whitelist_path=whitelist_path,
         time_slice=time_slice,
+        valkey_config=config
     )
 
     controller.set_whitelist([])

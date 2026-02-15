@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import datetime
 import datetime
 import enum
@@ -13,11 +14,6 @@ from glide_shared import ExpirySet, ExpiryType, Batch
 import common
 from common import PopNotification, SlotData, HeartbeatData
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 _POP_USER_SCRIPT = Script("""
@@ -48,20 +44,10 @@ _ADD_USER_SCRIPT = Script("""
     return 0
 """)
 
-_config: GlideClientConfiguration | None = None
-
 class AddReturnCode(enum.Enum):
     ALREADY_IN_QUEUE = 1
     ALREADY_ASSIGNED = 2
     SUCCESS = 0
-
-def configure(host, port):
-    global _config
-    _config = GlideClientConfiguration([NodeAddress(host, port)], request_timeout=500)
-    logger.info(f"Configured client for {host}:{port}")
-
-P = ParamSpec('P')
-R = TypeVar('R')
 
 _NOTIFICATIONS_QUEUE_KEY = 'notifs'
 _WAITING_QUEUE_KEY = 'waiting_queue'
@@ -87,139 +73,153 @@ def get_host_heartbeat(hostname: str):
     return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_HEARTBEAT_SUFFIX}'
 
 
-# TODO: maybe not efficient
-def with_client(func: Callable[Concatenate[GlideClient, P], Awaitable[R]]) -> Callable[[P], Awaitable[R]]:
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        if _config is None:
-            raise RuntimeError("Glide client not configured")
-        client = await GlideClient.create(_config)
-        result = await func(client, *args, **kwargs)
+@asynccontextmanager
+async def get_connection(config: GlideClientConfiguration):
+    client = await GlideClient.create(config)
+    try:
+        yield ValkeyConnection(client)
+    finally:
         await client.close()
-        return result
-    return wrapper
 
+class ValkeyConnection:
+    def __init__(self, client: GlideClient):
+        if client is None:
+            raise ValueError("Client cannot be None")
+        self.client: GlideClient = client
 
-########################
-#  FRONTEND FUNCTIONS  #
-########################
+    async def add_user(self, username: str) -> AddReturnCode:
+        ret = await self.client.invoke_script(
+            _ADD_USER_SCRIPT,
+            [_WAITING_QUEUE_KEY, get_user_assigned_host_key(username)],
+            [username],
+        )
+        return AddReturnCode(ret)
 
-@with_client
-async def add_user(client: GlideClient, username: str) -> AddReturnCode:
-    ret = await client.invoke_script(
-        _ADD_USER_SCRIPT,
-        [_WAITING_QUEUE_KEY, get_user_assigned_host_key(username)],
-        [username])
-    return AddReturnCode(ret)
+    ########################
+    #  FRONTEND FUNCTIONS  #
+    ########################
 
-@with_client
-async def remove_waiting_user(client: GlideClient, user_id: int):
-    await client.lrem(_WAITING_QUEUE_KEY, 0, str(user_id))
+    async def remove_waiting_user(self, user_id: int):
+        await self.client.lrem(_WAITING_QUEUE_KEY, 0, str(user_id))
 
-@with_client
-async def get_waiting_queue_size(client: GlideClient):
-    return await client.llen(_WAITING_QUEUE_KEY)
+    async def get_waiting_queue_size(self):
+        return await self.client.llen(_WAITING_QUEUE_KEY)
 
-@with_client
-async def peek_processing_queue(client: GlideClient, hostname: str) -> str | None:
-    res =  await client.lindex(get_processing_queue_key(hostname), 0)
-    if res is None:
-        return None
-    return res.decode()
+    async def peek_processing_queue(self, hostname: str) -> str | None:
+        res = await self.client.lindex(get_processing_queue_key(hostname), 0)
+        if res is None:
+            return None
+        return res.decode()
 
-@with_client
-async def get_all_waiting_users(client: GlideClient) -> list[str]:
-    raw = await client.lrange(_WAITING_QUEUE_KEY, 0, -1)
-    return [x.decode() for x in raw]
+    async def get_all_waiting_users(self) -> list[str]:
+        raw = await self.client.lrange(_WAITING_QUEUE_KEY, 0, -1)
+        return [x.decode() for x in raw]
 
-@with_client
-async def pop_notification_blocking(client: GlideClient) -> PopNotification | None:
-    raw = await client.brpop([_NOTIFICATIONS_QUEUE_KEY], 0)
-    if raw is None:
-        return None
-    return msgspec.json.decode(raw[1].decode(), type=PopNotification)
+    async def pop_notification_blocking(self) -> PopNotification | None:
+        raw = await self.client.brpop([_NOTIFICATIONS_QUEUE_KEY], 0)
+        if raw is None:
+            return None
+        return msgspec.json.decode(raw[1].decode(), type=PopNotification)
 
-@with_client
-async def get_all_heartbeats(client: GlideClient) -> list[common.HeartbeatData]:
-    heartbeats = []
-    cursor = '0'
-    while True:
-        cursor, vals = await client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
-        if vals is None or len(vals) == 0:
-            break
-        decoded_vals = [val.decode() for val in vals]
-        raw_heartbeats = await client.mget(decoded_vals)
-        heartbeats.extend([msgspec.json.decode(raw.decode(), type=HeartbeatData) for raw in raw_heartbeats])
+    async def get_all_heartbeats(self) -> list[common.HeartbeatData]:
+        heartbeats = []
+        cursor = '0'
+        while True:
+            cursor, vals = await self.client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
+            if vals is None or len(vals) == 0:
+                break
+            decoded_vals = [val.decode() for val in vals]
+            raw_heartbeats = await self.client.mget(decoded_vals)
+            heartbeats.extend([
+                msgspec.json.decode(raw.decode(), type=HeartbeatData)
+                for raw in raw_heartbeats
+            ])
 
-        if cursor.decode() == '0':
-            break
+            if cursor.decode() == '0':
+                break
 
-    return heartbeats
+        return heartbeats
 
+    async def get_heartbeat(self, hostname: str) -> common.HeartbeatData | None:
+        raw = await self.client.get(get_host_heartbeat(hostname))
+        if raw is None:
+            return None
+        return msgspec.json.decode(raw.decode(), type=common.HeartbeatData)
 
-@with_client
-async def get_heartbeat(client: GlideClient, hostname: str) -> common.HeartbeatData | None:
-    raw = await client.get(get_host_heartbeat(hostname))
-    if raw is None:
-        return None
-    return msgspec.json.decode(raw.decode(), type=common.HeartbeatData)
+    ####################
+    #  HOST FUNCTIONS  #
+    ####################
 
-####################
-#  HOST FUNCTIONS  #
-####################
+    async def pop_waiting(self, hostname: str) -> str | None:
+        res = await self.client.invoke_script(
+            _POP_USER_SCRIPT,
+            keys=[
+                _WAITING_QUEUE_KEY,
+                get_processing_queue_key(hostname),
+                get_user_assigned_host_key(hostname)
+            ],
+            args=[hostname]
+        )
 
-@with_client
-async def pop_waiting(client:GlideClient, hostname: str) -> str | None:
-    res = await client.invoke_script(
-        _POP_USER_SCRIPT,
-        keys=[_WAITING_QUEUE_KEY, get_processing_queue_key(hostname), get_user_assigned_host_key(hostname)],
-        args=[hostname])
+        if res is None:
+            return None
 
-    if res is None:
-        return None
+        return res.decode()
 
-    return res.decode()
+    async def finish_processing(self, hostname: str, user: str, expiry: datetime.datetime):
+        transaction = Batch(is_atomic=True)
 
-# TODO: maybe not clean code
-@with_client
-async def finish_processing(client: GlideClient, hostname: str, user: str, expiry: datetime.datetime):
-    """Mark the end of processing user by host, sends notification to bot, removes user from the processing queue, and fills in occupied slot data"""
-    transaction = Batch(is_atomic=True)
+        occupied_slot = SlotData(user, expiry)
+        notif = PopNotification(hostname, user)
 
-    occupied_slot = SlotData(user, expiry)
-    notif = PopNotification(hostname, user)
+        transaction.set(
+            get_host_slot_key(hostname),
+            msgspec.json.encode(occupied_slot)
+        )
 
-    # Set host as occupied
-    transaction.set(get_host_slot_key(hostname),msgspec.json.encode(occupied_slot))
+        transaction.lpush(
+            _NOTIFICATIONS_QUEUE_KEY,
+            [msgspec.json.encode(notif)]
+        )
 
-    # send notification
-    transaction.lpush(_NOTIFICATIONS_QUEUE_KEY, [msgspec.json.encode(notif)])
+        transaction.lrem(
+            get_processing_queue_key(hostname),
+            0,
+            hostname
+        )
 
-    # remove user from processing queue
-    transaction.lrem(get_processing_queue_key(hostname), 0, hostname)
+        await self.client.exec(transaction, True)
 
-    await client.exec(transaction, True)
+    async def get_slot(self, hostname: str) -> SlotData | None:
+        raw = await self.client.get(get_host_slot_key(hostname))
+        if raw is None:
+            return None
+        return msgspec.json.decode(raw.decode(), type=SlotData)
 
-@with_client
-async def get_slot(client: GlideClient, hostname: str) -> SlotData | None:
-    raw = await client.get(get_host_slot_key(hostname))
-    if raw is None:
-        return None
-    return msgspec.json.decode(raw.decode(), type=SlotData)
+    async def release_user(self, hostname: str):
+        transaction = Batch(is_atomic=True)
+        transaction.delete([get_host_slot_key(hostname)])
+        transaction.delete([get_user_assigned_host_key(hostname)])
+        await self.client.exec(transaction, True)
 
-@with_client
-async def release_user(client: GlideClient, hostname: str):
-    transaction = Batch(is_atomic=True)
-    transaction.delete([get_host_slot_key(hostname)])
-    transaction.delete([get_user_assigned_host_key(hostname)])
-    await client.exec(transaction, True)
+    async def send_notification(self, data: PopNotification):
+        assert self.client is not None
+        return await self.client.lpush(
+            _NOTIFICATIONS_QUEUE_KEY,
+            [msgspec.json.encode(data)]
+        )
 
-@with_client
-async def send_notification(client: GlideClient, data: PopNotification):
-    return await client.lpush(_NOTIFICATIONS_QUEUE_KEY, [msgspec.json.encode(data)])
-
-@with_client
-async def send_heartbeat(client: GlideClient, data: common.HeartbeatData, expiry: datetime.timedelta):
-    return await client.set(get_host_heartbeat(data.hostname),
-                            msgspec.json.encode(data),
-                            expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=expiry))
+    async def send_heartbeat(
+            self,
+            data: common.HeartbeatData,
+            expiry: datetime.timedelta
+    ):
+        assert self.client is not None
+        return await self.client.set(
+            get_host_heartbeat(data.hostname),
+            msgspec.json.encode(data),
+            expiry=ExpirySet(
+                expiry_type=ExpiryType.SEC,
+                value=expiry
+            )
+        )
