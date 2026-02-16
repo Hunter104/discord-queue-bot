@@ -166,6 +166,9 @@ class ValkeyConnection:
 
         return res.decode()
 
+    async def flush_processing_queue(self, hostname: str):
+        await self.client.close([get_processing_queue_key(hostname)])
+
     async def finish_processing(self, hostname: str, user: str, expiry: datetime.datetime):
         transaction = Batch(is_atomic=True)
 

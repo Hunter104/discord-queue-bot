@@ -154,15 +154,21 @@ class HostController:
         logger.info("Starting host controller...")
         try:
             async with get_connection(self._valkey_config) as conn:
-                # Recover the last user if the server stopped before finishing processing
                 last_user = await conn.peek_processing_queue(self.name)
-                if last_user:
+                slot = await conn.get_slot(self.name)
+
+                # If there is a slot, then processing has already finished
+                if slot:
+                    logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
+                    # Recover the last user if the server stopped before finishing processing
+                    await self._set_user(slot.current_user, slot.expiry)
+                    # Flush processing queue just in case
+                    await conn.flush_processing_queue(self.name)
+                elif last_user:
+                    logger.info("Found user %s in processing queue, finishing processing...", last_user)
+                    # Recover the current slot if the server stopped while serving a user
                     await self.process_user(last_user, conn)
 
-                # Recover the current slot if the server stopped while serving a user
-                slot = await conn.get_slot(self.name)
-                if slot:
-                    await self._set_user(slot.current_user, slot.expiry)
 
             await asyncio.gather(
                 self.fetch_user_loop(),
