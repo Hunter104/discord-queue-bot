@@ -175,9 +175,16 @@ async def main():
     time_slice = timedelta(
         seconds=int(os.getenv("TIME_SLICE", 10*60))
     )
+    logger.info(f"Configuring time slice for %s", time_slice)
+    logger.info("Polling interval: %s seconds", _POLLING_INTERVAL)
+    logger.info("Timeout for heartbeats: %s seconds", _HEARTBEAT_TIMEOUT)
 
     name = socket.gethostname()
+    logger.info("Starting host controller for hostname: %s", name)
+
     whitelist_path = os.environ["WHITELIST_PATH"]
+    logger.info(f"Using whitelist path: %s", whitelist_path)
+
 
     config = GlideClientConfiguration(
         [NodeAddress(
@@ -185,6 +192,9 @@ async def main():
             int(os.environ["VALKEY_PORT"]),
         )]
     )
+
+    logger.info("Starting Valkey configuration for: %s:%s", os.environ["VALKEY_HOST"], os.environ["VALKEY_PORT"])
+
 
     controller = HostController(
         name=name,
