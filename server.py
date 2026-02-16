@@ -2,7 +2,9 @@ import asyncio
 import logging
 import os
 import socket
+import subprocess
 from datetime import datetime, timedelta
+from subprocess import CalledProcessError
 
 from glide_shared import NodeAddress
 
@@ -21,9 +23,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
-
 _POLLING_INTERVAL = 5
 _HEARTBEAT_TIMEOUT = 10
+
 
 class HostController:
     def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, valkey_config: GlideClientConfiguration):
@@ -65,7 +67,6 @@ class HostController:
 
         self._expiry_task = asyncio.create_task(self._expiry_timer())
 
-
     async def release_user(self, conn: ValkeyConnection):
         if not conn:
             raise ValueError("Connection cannot be None")
@@ -73,20 +74,20 @@ class HostController:
         if not self.current_user:
             logger.warning("No user to release")
             return
+        try:
 
-        logger.info(f"Releasing user {self.current_user}")
+            subprocess.run(["pkill", "-SIGTERM", "-u", self.current_user], check=True, capture_output=True)
 
-        self.set_whitelist([])
+            logger.info(f"Releasing user {self.current_user}")
+            self.set_whitelist([])
+            user = self.current_user
+            self.current_user = None
+            self.status = HostStatus.AWAITING
+            self.expiry = datetime.max
 
-        # TODO: Remove SSH sessions
-
-        user = self.current_user
-        self.current_user = None
-        self.status = HostStatus.AWAITING
-        self.expiry = datetime.max
-
-        await conn.release_user(user)
-
+            await conn.release_user(user)
+        except (CalledProcessError | TimeoutError):
+            logger.exception("Couldn't kill user processes")
 
     # TODO: maybe this has some synchronization problems with the fetch user loop
     async def _expiry_timer(self):
@@ -128,16 +129,15 @@ class HostController:
         while not self._shutdown.is_set():
             async with get_connection(self._valkey_config) as conn:
                 await conn.send_heartbeat(
-                                            HeartbeatData(
-                                                self.name,
-                                                self.status,
-                                                self.expiry,
-                                                self.current_user,
-                                                datetime.now()
-                                            ),
-                                            timedelta(seconds=_HEARTBEAT_TIMEOUT))
-                await asyncio.sleep(_HEARTBEAT_TIMEOUT/2)
-
+                    HeartbeatData(
+                        self.name,
+                        self.status,
+                        self.expiry,
+                        self.current_user,
+                        datetime.now()
+                    ),
+                    timedelta(seconds=_HEARTBEAT_TIMEOUT))
+                await asyncio.sleep(_HEARTBEAT_TIMEOUT / 2)
 
     async def shutdown(self):
         logger.info("Shutting down host controller...")
@@ -169,7 +169,6 @@ class HostController:
                     # Recover the current slot if the server stopped while serving a user
                     await self.process_user(last_user, conn)
 
-
             await asyncio.gather(
                 self.fetch_user_loop(),
                 self.send_heartbeat_loop(),
@@ -184,7 +183,7 @@ async def main():
     load_dotenv()
 
     time_slice = timedelta(
-        seconds=int(os.getenv("TIME_SLICE", 10*60))
+        seconds=int(os.getenv("TIME_SLICE", 10 * 60))
     )
     logger.info(f"Configuring time slice for %s", time_slice)
     logger.info("Polling interval: %s seconds", _POLLING_INTERVAL)
@@ -196,7 +195,6 @@ async def main():
     whitelist_path = os.environ["WHITELIST_PATH"]
     logger.info(f"Using whitelist path: %s", whitelist_path)
 
-
     config = GlideClientConfiguration(
         [NodeAddress(
             os.environ["VALKEY_HOST"],
@@ -205,7 +203,6 @@ async def main():
     )
 
     logger.info("Starting Valkey configuration for: %s:%s", os.environ["VALKEY_HOST"], os.environ["VALKEY_PORT"])
-
 
     controller = HostController(
         name=name,
