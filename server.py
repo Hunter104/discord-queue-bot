@@ -8,9 +8,7 @@ from glide_shared import NodeAddress
 
 from common import HostStatus, HeartbeatData, PopNotification
 
-from discord.ui import user_select
 from dotenv import load_dotenv
-from numpy.f2py.crackfortran import usermodules
 from glide import GlideClientConfiguration
 
 from valkey import ValkeyConnection, get_connection
@@ -69,7 +67,11 @@ class HostController:
 
 
     async def release_user(self, conn: ValkeyConnection):
+        if not conn:
+            raise ValueError("Connection cannot be None")
+
         if not self.current_user:
+            logger.warning("No user to release")
             return
 
         logger.info(f"Releasing user {self.current_user}")
@@ -92,12 +94,14 @@ class HostController:
             sleep_period = self.expiry - datetime.now()
             if sleep_period <= timedelta(0):
                 logger.warning(f"Expiration date {self.expiry} has already been reached for user {self.current_user}")
-                await self.release_user()
+                async with get_connection(self._valkey_config) as conn:
+                    await self.release_user(conn)
             else:
                 logger.info(f"User {self.current_user} will expire in {sleep_period}")
                 logger.info(f"Sleeping for {sleep_period.total_seconds()} seconds")
                 await asyncio.sleep(sleep_period.total_seconds())
-                await self.release_user()
+                async with get_connection(self._valkey_config) as conn:
+                    await self.release_user(conn)
         except asyncio.CancelledError:
             logger.info("Expiry timer cancelled")
             raise
@@ -147,15 +151,16 @@ class HostController:
                 pass
 
     async def run(self):
+        logger.info("Starting host controller...")
         try:
-            async with get_connection(self._valkey_config) as valkey:
+            async with get_connection(self._valkey_config) as conn:
                 # Recover the last user if the server stopped before finishing processing
-                last_user = await valkey.peek_processing_queue(self.name)
+                last_user = await conn.peek_processing_queue(self.name)
                 if last_user:
-                    await self.process_user(last_user)
+                    await self.process_user(last_user, conn)
 
                 # Recover the current slot if the server stopped while serving a user
-                slot = await valkey.get_slot(self.name)
+                slot = await conn.get_slot(self.name)
                 if slot:
                     await self._set_user(slot.current_user, slot.expiry)
 
