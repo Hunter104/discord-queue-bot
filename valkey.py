@@ -2,12 +2,14 @@ import datetime
 import enum
 import logging
 from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator
 
 from glide import GlideClientConfiguration, GlideClient
 from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
 from google.protobuf.timestamp_pb2 import Timestamp
 
+import protocol_pb2
 from protocol_pb2 import HeartbeatData, HostStatus, PopNotification, SlotData
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,7 @@ class AddReturnCode(enum.Enum):
     SUCCESS = 0
 
 
+_STATUS_MESSAGE_LIST_KEY = 'status_messages'
 _NOTIFICATIONS_QUEUE_KEY = 'notifs'
 _WAITING_QUEUE_KEY = 'waiting_queue'
 
@@ -57,7 +60,24 @@ _HOST_HEARTBEAT_SUFFIX = 'heartbeat'
 
 _USER_KEY_PREFIX = 'user'
 _USER_ASSIGNMENT_KEY_SUFFIX = 'assigned_to'
+_USER_DISCORD_ID_SUFFIX = 'discord_id'
+_USER_UNIX_ID_SUFFIX = 'unix_id'
 
+_STATUS_MESSAGE_PREFIX = 'status_message'
+_STATUS_MESSAGE_CHANNEL_LIST_KEY = 'messages'
+_STATUS_MESSAGE_CHANNELS_KEY = 'status_message_channels'
+
+def get_status_message_channels_key() -> str:
+    return f'{_STATUS_MESSAGE_LIST_KEY}:{_STATUS_MESSAGE_CHANNELS_KEY}'
+
+def get_status_message_channel_list_key(channel_id: int) -> str:
+    return f'{_STATUS_MESSAGE_PREFIX}:{channel_id}:{_STATUS_MESSAGE_CHANNEL_LIST_KEY}'
+
+def get_user_discord_id_key(username: str) -> str:
+    return f'{_USER_KEY_PREFIX}:{username}:{_USER_DISCORD_ID_SUFFIX}'
+
+def get_user_unix_id_key(discord_id: str) -> str:
+    return f'{_USER_KEY_PREFIX}:{discord_id}:{_USER_UNIX_ID_SUFFIX}'
 
 def get_host_slot_key(hostname: str) -> str:
     return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_SLOT_KEY_SUFFIX}'
@@ -101,6 +121,47 @@ class ValkeyConnection:
     ########################
     #  FRONTEND FUNCTIONS  #
     ########################
+
+    # --- User Registration ---
+    async def register_user(self, discord_id: int, unix_user: str):
+        transaction = Batch(is_atomic=True)
+        transaction.set(get_user_discord_id_key(unix_user), str(discord_id))
+        transaction.set(get_user_unix_id_key(str(discord_id)), unix_user)
+        await self.client.exec(transaction, True)
+
+    async def get_discord_id(self, unix_user: str) -> str | None:
+        res = await self.client.get(get_user_discord_id_key(unix_user))
+        if res is None:
+            return None
+        return res.decode()
+
+    async def get_unix_user(self, discord_id: str) -> str | None:
+        res = await self.client.get(get_user_unix_id_key(discord_id))
+        if res is None:
+            return None
+        return res.decode()
+
+    # --- Status Messages ---
+
+    async def register_status_message(self, channel_id: int, message_id: int):
+        transaction = Batch(is_atomic=True)
+        transaction.sadd(get_status_message_channels_key(), [str(channel_id)])
+        transaction.sadd(get_status_message_channel_list_key(channel_id), [str(message_id)])
+        await self.client.exec(transaction, True)
+
+    async def delete_status_message(self, channel_id: int, message_id: int):
+        transaction = Batch(is_atomic=True)
+        transaction.srem(get_status_message_channel_list_key(channel_id), [message_id.to_bytes()])
+        transaction.srem(get_status_message_channels_key(), [channel_id.to_bytes()])
+        await self.client.exec(transaction, True)
+
+    async def get_status_messages(self) -> AsyncGenerator[tuple[int, int], Any]:
+        channels = await self.client.smembers(get_status_message_channels_key())
+        for channel in channels:
+            key = get_status_message_channel_list_key(int(channel.decode()))
+            messages = await self.client.smembers(key)
+            for message in messages:
+                yield int(channel.decode()), int(message.decode())
 
     async def remove_waiting_user(self, user_id: int):
         await self.client.lrem(_WAITING_QUEUE_KEY, 0, str(user_id))
