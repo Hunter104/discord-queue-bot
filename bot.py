@@ -111,14 +111,17 @@ async def join_queue(ctx):
     async with get_connection(config) as conn:
         unix_user = await conn.get_unix_user(ctx.author.id)
         if unix_user is None:
+            logger.warning("Non registered user %d tried entering queue", ctx.author.id)
             await ctx.respond("You have not been registered, please contact your administrator")
             return
 
         ret = await conn.add_user(unix_user)
         match ret:
             case valkey.AddReturnCode.ALREADY_IN_QUEUE:
+                logger.warning("User %s tried entering queue twice", unix_user)
                 await ctx.respond("You are already in the queue.")
             case valkey.AddReturnCode.ALREADY_ASSIGNED:
+                logger.warning("User %s tried entering queue while assigned", unix_user)
                 await ctx.respond("You are already assigned to a host.")
             case valkey.AddReturnCode.SUCCESS:
                 await ctx.respond("You have been added to the queue.")
@@ -143,12 +146,15 @@ async def leave_queue(ctx):
 async def remove_from_queue(ctx, discord_user: discord.User):
     async with get_connection(config) as conn:
         unix_user = await conn.get_unix_user(discord_user.id)
-        if discord_user is None:
-            await ctx.respond(f"User {discord_user} is not registered, please contact your administrator")
+        if unix_user is None:
+            logger.warning("Attempt at removing non registered user %d from queue", discord_user.id)
+            await ctx.respond("User not registered.")
+            return
 
         if await conn.remove_waiting_user(unix_user):
             await ctx.respond(f"✅ {unix_user.mention} has been removed from the queue.")
         else:
+            logger.warning("Attempt at removing non-present user %s from queue", unix_user)
             await ctx.respond(f"⚠️ {unix_user.mention} is not in the queue.")
 
 
