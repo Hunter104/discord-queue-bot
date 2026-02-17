@@ -4,7 +4,6 @@ import logging
 import os
 from datetime import datetime
 
-import aiosqlite
 import discord
 import jinja2
 from discord.ext import tasks
@@ -14,8 +13,9 @@ from glide_shared import NodeAddress, GlideClientConfiguration
 import bot_db
 import valkey
 from bot_db import get_discord_id, get_unix_user, register_user
-from common import HeartbeatData, HostStatus
 from valkey import get_connection
+
+from protocol_pb2 import HeartbeatData, HostStatus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,12 +163,16 @@ async def register_user(ctx, user: discord.User, unix_user: str):
 
 
 async def pretty_format_host(data: HeartbeatData) -> str:
+    real_stamp = data.timestamp.ToDatetime()
+    real_expiry = data.expiry.ToDatetime()
     match data.status:
         case HostStatus.IN_USE:
             user_id = await get_discord_id(data.current_user)
-            return f"🔴 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {data.expiry.strftime('%H:%M:%S')}"
+            return f"🔴 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {real_expiry.strftime('%H:%M:%S')}"
         case HostStatus.AWAITING:
-            return f"🟢 {data.hostname} (last seen: {data.timestamp.strftime('%H:%M:%S')}) - Available"
+            return f"🟢 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - Available"
+        case _:
+            raise ValueError(f"Unknown status {data.status}")
 
 
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")

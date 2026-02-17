@@ -3,3 +3,4 @@ __pycache__
 .python-version
 userService_pb2*
 .idea
+protocol_pb2*

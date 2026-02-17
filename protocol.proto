@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package hostsystem;
+
+import "google/protobuf/timestamp.proto";
+
+enum HostStatus {
+  HOST_STATUS_UNSPECIFIED = 0;
+  AWAITING = 1;
+  IN_USE = 2;
+}
+
+message PopNotification {
+  string hostname = 1;
+  string unix_user = 2;
+}
+
+message SlotData {
+  string current_user = 1;
+  google.protobuf.Timestamp expiry = 2;
+}
+
+message HeartbeatData {
+  string hostname = 1;
+  HostStatus status = 2;
+
+  optional google.protobuf.Timestamp expiry = 3;
+  optional string current_user = 4;
+
+  google.protobuf.Timestamp timestamp = 5;
+}

@@ -8,11 +8,10 @@ from subprocess import CalledProcessError
 
 from glide_shared import NodeAddress
 
-from common import HostStatus, HeartbeatData, PopNotification
-
 from dotenv import load_dotenv
 from glide import GlideClientConfiguration
 
+import protocol_pb2
 from valkey import ValkeyConnection, get_connection
 
 logging.basicConfig(
@@ -33,9 +32,9 @@ class HostController:
         self.whitelist_path = whitelist_path
         self.time_slice = time_slice
 
-        self.status = HostStatus.AWAITING
+        self.status = protocol_pb2.HostStatus.AWAITING
         self.current_user: str | None = None
-        self.expiry: datetime = datetime.max
+        self.expiry: datetime | None = None
 
         self._expiry_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
@@ -60,7 +59,7 @@ class HostController:
     async def _set_user(self, user: str, expiry: datetime):
         logger.info(f"Setting user {user} as in use")
         self.current_user = user
-        self.status = HostStatus.IN_USE
+        self.status = protocol_pb2.HostStatus.IN_USE
         self.expiry = expiry
 
         self.set_whitelist([user])
@@ -82,7 +81,7 @@ class HostController:
             self.set_whitelist([])
             user = self.current_user
             self.current_user = None
-            self.status = HostStatus.AWAITING
+            self.status = protocol_pb2.HostStatus.AWAITING
             self.expiry = datetime.max
 
             await conn.release_user(user)
@@ -108,15 +107,15 @@ class HostController:
             raise
 
     async def fetch_user_loop(self):
-        if self.status == HostStatus.IN_USE:
-            logger.info("In use, waiting for session end")
-        elif self.status == HostStatus.AWAITING:
+        if self.status == protocol_pb2.HostStatus.IN_USE:
+            logger.info("In use, will await for end of session")
+        elif self.status == protocol_pb2.HostStatus.AWAITING:
             logger.info("Waiting for user...")
         else:
             logger.warning("Unknown state %s", self.status)
 
         while not self._shutdown.is_set():
-            if self.status == HostStatus.AWAITING:
+            if self.status == protocol_pb2.HostStatus.AWAITING:
                 async with get_connection(self._valkey_config) as conn:
                     user = await conn.pop_waiting(self.name)
                     if user:
@@ -129,13 +128,11 @@ class HostController:
         while not self._shutdown.is_set():
             async with get_connection(self._valkey_config) as conn:
                 await conn.send_heartbeat(
-                    HeartbeatData(
-                        self.name,
-                        self.status,
-                        self.expiry,
-                        self.current_user,
-                        datetime.now()
-                    ),
+                    self.name,
+                    self.status,
+                    self.expiry,
+                    self.current_user,
+                    datetime.now(),
                     timedelta(seconds=_HEARTBEAT_TIMEOUT))
                 await asyncio.sleep(_HEARTBEAT_TIMEOUT / 2)
 

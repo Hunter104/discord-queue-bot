@@ -1,18 +1,14 @@
-from contextlib import asynccontextmanager
-import datetime
 import datetime
 import enum
-import functools
 import logging
-from typing import Callable, Awaitable, Concatenate, ParamSpec, TypeVar
+from contextlib import asynccontextmanager
 
-import msgspec.json
-from glide import GlideClientConfiguration, NodeAddress, GlideClient
+from glide import GlideClientConfiguration, GlideClient
 from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
+from google.protobuf.timestamp_pb2 import Timestamp
 
-import common
-from common import PopNotification, SlotData, HeartbeatData
+from protocol_pb2 import HeartbeatData, HostStatus, PopNotification, SlotData
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +40,12 @@ _ADD_USER_SCRIPT = Script("""
     return 0
 """)
 
+
 class AddReturnCode(enum.Enum):
     ALREADY_IN_QUEUE = 1
     ALREADY_ASSIGNED = 2
     SUCCESS = 0
+
 
 _NOTIFICATIONS_QUEUE_KEY = 'notifs'
 _WAITING_QUEUE_KEY = 'waiting_queue'
@@ -60,14 +58,18 @@ _HOST_HEARTBEAT_SUFFIX = 'heartbeat'
 _USER_KEY_PREFIX = 'user'
 _USER_ASSIGNMENT_KEY_SUFFIX = 'assigned_to'
 
+
 def get_host_slot_key(hostname: str) -> str:
     return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_SLOT_KEY_SUFFIX}'
+
 
 def get_processing_queue_key(hostname: str) -> str:
     return f'{_HOST_KEY_PREFIX}:{hostname}:{_PROCESSING_QUEUE_KEY_SUFFIX}'
 
+
 def get_user_assigned_host_key(username: str) -> str:
     return f'{_USER_KEY_PREFIX}:{username}:{_USER_ASSIGNMENT_KEY_SUFFIX}'
+
 
 def get_host_heartbeat(hostname: str):
     return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_HEARTBEAT_SUFFIX}'
@@ -80,6 +82,7 @@ async def get_connection(config: GlideClientConfiguration):
         yield ValkeyConnection(client)
     finally:
         await client.close()
+
 
 class ValkeyConnection:
     def __init__(self, client: GlideClient):
@@ -119,32 +122,36 @@ class ValkeyConnection:
         raw = await self.client.brpop([_NOTIFICATIONS_QUEUE_KEY], 0)
         if raw is None:
             return None
-        return msgspec.json.decode(raw[1].decode(), type=PopNotification)
+        pop_notification = PopNotification()
+        pop_notification.ParseFromString(raw[1])
+        return pop_notification
 
-    async def get_all_heartbeats(self) -> list[common.HeartbeatData]:
+    async def get_all_heartbeats(self) -> list[HeartbeatData]:
         heartbeats = []
         cursor = '0'
         while True:
-            cursor, vals = await self.client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
-            if vals is None or len(vals) == 0:
+            cursor, keys = await self.client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
+            if keys is None or len(keys) == 0:
                 break
-            decoded_vals = [val.decode() for val in vals]
-            raw_heartbeats = await self.client.mget(decoded_vals)
-            heartbeats.extend([
-                msgspec.json.decode(raw.decode(), type=HeartbeatData)
-                for raw in raw_heartbeats
-            ])
+            decoded_keys = [key.decode() for key in keys]
+            heartbeats = []
+            for raw in await self.client.mget(decoded_keys):
+                heartbeat = HeartbeatData()
+                heartbeat.ParseFromString(raw)
+                heartbeats.append(heartbeat)
 
             if cursor.decode() == '0':
                 break
 
         return heartbeats
 
-    async def get_heartbeat(self, hostname: str) -> common.HeartbeatData | None:
+    async def get_heartbeat(self, hostname: str) -> HeartbeatData | None:
         raw = await self.client.get(get_host_heartbeat(hostname))
         if raw is None:
             return None
-        return msgspec.json.decode(raw.decode(), type=common.HeartbeatData)
+        heartbeat = HeartbeatData()
+        heartbeat.ParseFromString(raw)
+        return heartbeat
 
     ####################
     #  HOST FUNCTIONS  #
@@ -167,22 +174,29 @@ class ValkeyConnection:
         return res.decode()
 
     async def flush_processing_queue(self, hostname: str):
-        await self.client.close([get_processing_queue_key(hostname)])
+        await self.client.delete([get_processing_queue_key(hostname)])
 
     async def finish_processing(self, hostname: str, user: str, expiry: datetime.datetime):
         transaction = Batch(is_atomic=True)
 
-        occupied_slot = SlotData(user, expiry)
-        notif = PopNotification(hostname, user)
+        occupied_slot = SlotData()
+        occupied_slot.current_user = user
+        timestamp = Timestamp()
+        timestamp.FromDatetime(datetime.datetime.now())
+        occupied_slot.expiry.FromDatetime(expiry)
+
+        notif = PopNotification()
+        notif.hostname = hostname
+        notif.unix_user = user
 
         transaction.set(
             get_host_slot_key(hostname),
-            msgspec.json.encode(occupied_slot)
+            notif.SerializeToString()
         )
 
         transaction.lpush(
             _NOTIFICATIONS_QUEUE_KEY,
-            [msgspec.json.encode(notif)]
+            [notif.SerializeToString()]
         )
 
         transaction.lrem(
@@ -197,7 +211,9 @@ class ValkeyConnection:
         raw = await self.client.get(get_host_slot_key(hostname))
         if raw is None:
             return None
-        return msgspec.json.decode(raw.decode(), type=SlotData)
+        slot = SlotData()
+        slot.ParseFromString(raw)
+        return slot
 
     async def release_user(self, hostname: str):
         transaction = Batch(is_atomic=True)
@@ -209,20 +225,31 @@ class ValkeyConnection:
         assert self.client is not None
         return await self.client.lpush(
             _NOTIFICATIONS_QUEUE_KEY,
-            [msgspec.json.encode(data)]
+            [data.SerializeToString()]
         )
 
     async def send_heartbeat(
             self,
-            data: common.HeartbeatData,
-            expiry: datetime.timedelta
+            hostname: str,
+            status: HostStatus,
+            expiry: datetime.datetime | None,
+            current_user: str | None,
+            timestamp: datetime.datetime,
+            message_expiry: datetime.timedelta,
     ):
-        assert self.client is not None
+        data = HeartbeatData()
+        data.hostname = hostname
+        data.status = status
+        if current_user is not None:
+            data.current_user = current_user
+        if expiry is not None:
+            data.expiry.FromDatetime(expiry)
+        data.timestamp.FromDatetime(timestamp)
         return await self.client.set(
             get_host_heartbeat(data.hostname),
-            msgspec.json.encode(data),
+            data.SerializeToString(),
             expiry=ExpirySet(
                 expiry_type=ExpiryType.SEC,
-                value=expiry
+                value=message_expiry
             )
         )
