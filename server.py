@@ -36,7 +36,6 @@ class HostController:
         self.current_user: str | None = None
         self.expiry: datetime | None = None
 
-        self._expiry_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
 
         self._valkey_config = valkey_config
@@ -61,10 +60,8 @@ class HostController:
         self.current_user = user
         self.status = protocol_pb2.HostStatus.IN_USE
         self.expiry = expiry
-
         self.set_whitelist([user])
 
-        self._expiry_task = asyncio.create_task(self._expiry_timer())
 
     async def release_user(self, conn: ValkeyConnection):
         if not conn:
@@ -88,8 +85,7 @@ class HostController:
         except (CalledProcessError | TimeoutError):
             logger.exception("Couldn't kill user processes")
 
-    # TODO: maybe this has some synchronization problems with the fetch user loop
-    async def _expiry_timer(self):
+    async def expiry_timer(self):
         try:
             sleep_period = self.expiry - datetime.now()
             if sleep_period <= timedelta(0):
@@ -107,21 +103,29 @@ class HostController:
             raise
 
     async def fetch_user_loop(self):
-        if self.status == protocol_pb2.HostStatus.IN_USE:
-            logger.info("In use, will await for end of session")
-        elif self.status == protocol_pb2.HostStatus.AWAITING:
-            logger.info("Waiting for user...")
-        else:
-            logger.warning("Unknown state %s", self.status)
+        async with get_connection(self._valkey_config) as conn:
+            last_user = await conn.peek_processing_queue(self.name)
+            slot = await conn.get_slot(self.name)
+            if slot:
+                # Recover the current slot if the server stopped while serving a user
+                logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
+                await self._set_user(slot.current_user, slot.expiry)
+                # Flush processing queue just in case
+                await conn.flush_processing_queue(self.name)
+                await self.expiry_timer()
+            elif last_user:
+                # Recover the last user if the server stopped before finishing processing
+                logger.info("Found user %s in processing queue, finishing processing...", last_user)
+                await self.process_user(last_user, conn)
+                await self.expiry_timer()
 
-        while not self._shutdown.is_set():
-            if self.status == protocol_pb2.HostStatus.AWAITING:
-                async with get_connection(self._valkey_config) as conn:
-                    user = await conn.pop_waiting(self.name)
-                    if user:
-                        await self.process_user(user, conn)
-
-            await asyncio.sleep(_POLLING_INTERVAL)
+            while not self._shutdown.is_set():
+                user = await conn.pop_waiting(self.name)
+                if user:
+                    await self.process_user(user, conn)
+                    await self.expiry_timer()
+                else:
+                    await asyncio.sleep(_POLLING_INTERVAL)
 
     async def send_heartbeat_loop(self):
         logger.info("Starting heartbeat loop")
@@ -140,32 +144,9 @@ class HostController:
         logger.info("Shutting down host controller...")
         self._shutdown.set()
 
-        if self._expiry_task:
-            self._expiry_task.cancel()
-            try:
-                await self._expiry_task
-            except asyncio.CancelledError:
-                pass
-
     async def run(self):
         logger.info("Starting host controller...")
         try:
-            async with get_connection(self._valkey_config) as conn:
-                last_user = await conn.peek_processing_queue(self.name)
-                slot = await conn.get_slot(self.name)
-
-                # If there is a slot, then processing has already finished
-                if slot:
-                    logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
-                    # Recover the last user if the server stopped before finishing processing
-                    await self._set_user(slot.current_user, slot.expiry)
-                    # Flush processing queue just in case
-                    await conn.flush_processing_queue(self.name)
-                elif last_user:
-                    logger.info("Found user %s in processing queue, finishing processing...", last_user)
-                    # Recover the current slot if the server stopped while serving a user
-                    await self.process_user(last_user, conn)
-
             await asyncio.gather(
                 self.fetch_user_loop(),
                 self.send_heartbeat_loop(),
