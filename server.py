@@ -20,7 +20,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
 
 _POLLING_INTERVAL = 5
 _HEARTBEAT_TIMEOUT = 10
@@ -52,10 +51,10 @@ class HostController:
 
     async def process_user(self, user: str, conn: ValkeyConnection):
         logger.info(f"Processing user {user}...")
-        await self._set_user(user, datetime.now() + self.time_slice)
+        self._set_user(user, datetime.now() + self.time_slice)
         await conn.finish_processing(self.name, user, expiry=self.expiry)
 
-    async def _set_user(self, user: str, expiry: datetime):
+    def _set_user(self, user: str, expiry: datetime):
         logger.info(f"Setting user {user} as in use")
         self.current_user = user
         self.status = protocol_pb2.HostStatus.IN_USE
@@ -64,40 +63,30 @@ class HostController:
 
 
     async def release_user(self, conn: ValkeyConnection):
-        if not conn:
-            raise ValueError("Connection cannot be None")
-
         if not self.current_user:
             logger.warning("No user to release")
             return
-        try:
+        subprocess.run(["pkill", "-SIGTERM", "-u", self.current_user], check=True, capture_output=True)
 
-            subprocess.run(["pkill", "-SIGTERM", "-u", self.current_user], check=True, capture_output=True)
+        logger.info(f"Releasing user {self.current_user}")
+        self.set_whitelist([])
+        user = self.current_user
+        self.current_user = None
+        self.status = protocol_pb2.HostStatus.AWAITING
+        self.expiry = datetime.max
 
-            logger.info(f"Releasing user {self.current_user}")
-            self.set_whitelist([])
-            user = self.current_user
-            self.current_user = None
-            self.status = protocol_pb2.HostStatus.AWAITING
-            self.expiry = datetime.max
-
-            await conn.release_user(user)
-        except (CalledProcessError | TimeoutError):
-            logger.exception("Couldn't kill user processes")
+        await conn.release_user(user)
 
     async def expiry_timer(self):
         try:
             sleep_period = self.expiry - datetime.now()
             if sleep_period <= timedelta(0):
                 logger.warning(f"Expiration date {self.expiry} has already been reached for user {self.current_user}")
-                async with get_connection(self._valkey_config) as conn:
-                    await self.release_user(conn)
             else:
-                logger.info(f"User {self.current_user} will expire in {sleep_period}")
-                logger.info(f"Sleeping for {sleep_period.total_seconds()} seconds")
+                logger.info(f"User %s will expire in %s, sleeping for %.2f seconds", self.current_user, sleep_period, sleep_period.total_seconds())
                 await asyncio.sleep(sleep_period.total_seconds())
-                async with get_connection(self._valkey_config) as conn:
-                    await self.release_user(conn)
+            async with get_connection(self._valkey_config) as conn:
+                await self.release_user(conn)
         except asyncio.CancelledError:
             logger.info("Expiry timer cancelled")
             raise
@@ -109,7 +98,7 @@ class HostController:
             if slot:
                 # Recover the current slot if the server stopped while serving a user
                 logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
-                await self._set_user(slot.current_user, slot.expiry)
+                self._set_user(slot.current_user, slot.expiry)
                 # Flush processing queue just in case
                 await conn.flush_processing_queue(self.name)
                 await self.expiry_timer()
