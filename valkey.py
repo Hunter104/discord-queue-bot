@@ -166,9 +166,6 @@ class ValkeyConnection:
     async def remove_waiting_user(self, user_id: int):
         await self.client.lrem(_WAITING_QUEUE_KEY, 0, str(user_id))
 
-    async def get_waiting_queue_size(self):
-        return await self.client.llen(_WAITING_QUEUE_KEY)
-
     async def peek_processing_queue(self, hostname: str) -> str | None:
         res = await self.client.lindex(get_processing_queue_key(hostname), 0)
         if res is None:
@@ -205,14 +202,6 @@ class ValkeyConnection:
                 break
 
         return heartbeats
-
-    async def get_heartbeat(self, hostname: str) -> HeartbeatData | None:
-        raw = await self.client.get(get_host_heartbeat(hostname))
-        if raw is None:
-            return None
-        heartbeat = HeartbeatData()
-        heartbeat.ParseFromString(raw)
-        return heartbeat
 
     ####################
     #  HOST FUNCTIONS  #
@@ -281,13 +270,6 @@ class ValkeyConnection:
         transaction.delete([get_host_slot_key(hostname)])
         transaction.delete([get_user_assigned_host_key(hostname)])
         await self.client.exec(transaction, True)
-
-    async def send_notification(self, data: PopNotification):
-        assert self.client is not None
-        return await self.client.lpush(
-            _NOTIFICATIONS_QUEUE_KEY,
-            [data.SerializeToString()]
-        )
 
     async def send_heartbeat(
             self,
