@@ -4,15 +4,14 @@ import os
 import socket
 import subprocess
 from datetime import datetime, timedelta
-from subprocess import CalledProcessError
 
 from glide_shared import NodeAddress
 
 from dotenv import load_dotenv
-from glide import GlideClientConfiguration
+from glide import GlideClientConfiguration, GlideClient
 
 import protocol_pb2
-from valkey import ValkeyConnection, get_connection
+import valkey
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +25,7 @@ _HEARTBEAT_TIMEOUT = 10
 
 
 class HostController:
-    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, valkey_config: GlideClientConfiguration):
+    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, valkey_client: GlideClient):
         self.name = name
         self.whitelist_path = whitelist_path
         self.time_slice = time_slice
@@ -37,7 +36,7 @@ class HostController:
 
         self._shutdown = asyncio.Event()
 
-        self._valkey_config = valkey_config
+        self._valkey_client = valkey_client
 
     def get_whitelist(self) -> list[str]:
         if not os.path.exists(self.whitelist_path):
@@ -49,11 +48,10 @@ class HostController:
         with open(self.whitelist_path, "w") as f:
             f.write("\n".join(whitelist))
 
-    async def process_user(self, user: str, conn: ValkeyConnection):
+    async def process_user(self, user: str):
         logger.info(f"Processing user {user}...")
         self._set_user(user, datetime.now() + self.time_slice)
-        raise RuntimeError("Oops")
-        await conn.finish_processing(self.name, user, expiry=self.expiry)
+        await valkey.finish_processing(self._valkey_client, self.name, user, expiry=self.expiry)
 
     def _set_user(self, user: str, expiry: datetime):
         logger.info(f"Setting user {user} as in use")
@@ -63,7 +61,7 @@ class HostController:
         self.set_whitelist([user])
 
 
-    async def release_user(self, conn: ValkeyConnection):
+    async def release_user(self):
         if not self.current_user:
             logger.warning("No user to release")
             return
@@ -76,7 +74,7 @@ class HostController:
         self.status = protocol_pb2.HostStatus.AWAITING
         self.expiry = datetime.max
 
-        await conn.release_user(user)
+        await valkey.release_user(self._valkey_client, user)
 
     async def expiry_timer(self):
         try:
@@ -86,37 +84,36 @@ class HostController:
             else:
                 logger.info(f"User %s will expire in %s, sleeping for %.2f seconds", self.current_user, sleep_period, sleep_period.total_seconds())
                 await asyncio.sleep(sleep_period.total_seconds())
-            async with get_connection(self._valkey_config) as conn:
-                await self.release_user(conn)
+                await valkey.release_user(self._valkey_client, self.name)
         except asyncio.CancelledError:
             logger.info("Expiry timer cancelled")
             raise
 
     async def fetch_user_loop(self):
-        async with get_connection(self._valkey_config) as conn:
-            slot = await conn.get_slot(self.name)
-            if slot:
-                logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
-                self._set_user(slot.current_user, slot.expiry.ToDatetime())
-                await self.expiry_timer()
+        slot = await valkey.get_slot(self._valkey_client, self.name)
+        if slot:
+            logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
+            self._set_user(slot.current_user, slot.expiry.ToDatetime())
+            await self.expiry_timer()
 
-            while not self._shutdown.is_set():
-                user = await conn.pop_waiting_queue_blocking()
-                if user:
-                    await self.process_user(user, conn)
-                    await self.expiry_timer()
+        while not self._shutdown.is_set():
+            user = await valkey.pop_waiting_queue_blocking(self._valkey_client)
+            if user:
+                await self.process_user(user)
+                await self.expiry_timer()
 
     async def send_heartbeat_loop(self):
         logger.info("Starting heartbeat loop")
         while not self._shutdown.is_set():
-            async with get_connection(self._valkey_config) as conn:
-                await conn.send_heartbeat(
+                await valkey.send_heartbeat(
+                    self._valkey_client,
                     self.name,
                     self.status,
                     self.expiry,
                     self.current_user,
                     datetime.now(),
-                    timedelta(seconds=_HEARTBEAT_TIMEOUT))
+                    timedelta(seconds=_HEARTBEAT_TIMEOUT),
+                )
                 await asyncio.sleep(_HEARTBEAT_TIMEOUT / 2)
 
     async def shutdown(self):
@@ -165,7 +162,7 @@ async def main():
         name=name,
         whitelist_path=whitelist_path,
         time_slice=time_slice,
-        valkey_config=config
+        valkey_client=await GlideClient.create(config),
     )
 
     controller.set_whitelist([])
