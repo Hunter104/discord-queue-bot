@@ -52,6 +52,7 @@ class HostController:
     async def process_user(self, user: str, conn: ValkeyConnection):
         logger.info(f"Processing user {user}...")
         self._set_user(user, datetime.now() + self.time_slice)
+        raise RuntimeError("Oops")
         await conn.finish_processing(self.name, user, expiry=self.expiry)
 
     def _set_user(self, user: str, expiry: datetime):
@@ -93,28 +94,17 @@ class HostController:
 
     async def fetch_user_loop(self):
         async with get_connection(self._valkey_config) as conn:
-            last_user = await conn.peek_processing_queue(self.name)
             slot = await conn.get_slot(self.name)
             if slot:
-                # Recover the current slot if the server stopped while serving a user
                 logger.info("Slot found for user %s til %s, recovering...", slot.current_user, slot.expiry)
-                self._set_user(slot.current_user, slot.expiry)
-                # Flush processing queue just in case
-                await conn.flush_processing_queue(self.name)
-                await self.expiry_timer()
-            elif last_user:
-                # Recover the last user if the server stopped before finishing processing
-                logger.info("Found user %s in processing queue, finishing processing...", last_user)
-                await self.process_user(last_user, conn)
+                self._set_user(slot.current_user, slot.expiry.ToDatetime())
                 await self.expiry_timer()
 
             while not self._shutdown.is_set():
-                user = await conn.pop_waiting(self.name)
+                user = await conn.pop_waiting_queue_blocking()
                 if user:
                     await self.process_user(user, conn)
                     await self.expiry_timer()
-                else:
-                    await asyncio.sleep(_POLLING_INTERVAL)
 
     async def send_heartbeat_loop(self):
         logger.info("Starting heartbeat loop")

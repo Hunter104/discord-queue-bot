@@ -55,6 +55,12 @@ async def generate_embed():
 
 
 @tasks.loop(seconds=1)
+async def monitor_processing_queue():
+    async with get_connection(config) as conn:
+        await conn.requeue_timed_out_users()
+
+
+@tasks.loop(seconds=1)
 async def update_status_messages():
     async with get_connection(config) as conn:
         embed = await generate_embed()
@@ -105,6 +111,9 @@ async def on_ready():
     logger.info("Starting status message update loop")
     update_status_messages.start()
 
+    logger.info("Starting processing queue monitor loop")
+    monitor_processing_queue.start()
+
 
 @bot.slash_command(name="join_queue", description="Join the queue")
 async def join_queue(ctx):
@@ -123,6 +132,9 @@ async def join_queue(ctx):
             case valkey.AddReturnCode.ALREADY_ASSIGNED:
                 logger.warning("User %s tried entering queue while assigned", unix_user)
                 await ctx.respond("You are already assigned to a host.")
+            case valkey.AddReturnCode.IN_PROCESSING:
+                logger.warning("User %s tried entering queue while in processing", unix_user)
+                await ctx.respond("You are in awaiting processing by one of ours hosts, please wait.")
             case valkey.AddReturnCode.SUCCESS:
                 await ctx.respond("You have been added to the queue.")
 
