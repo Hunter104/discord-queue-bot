@@ -205,7 +205,7 @@ class ValkeyConnection:
             lock = get_user_lock_key(user)
             # User has expired lock
             if await self.client.get(lock) is None:
-                # Reinsert at the beggining of waiting queue
+                # Reinsert at the beginning of waiting queue
                 transaction = Batch(is_atomic=True)
                 transaction.lrem(_PROCESSING_QUEUE_KEY, 0, user)
                 transaction.lpush(_WAITING_QUEUE_KEY, [user])
