@@ -42,8 +42,8 @@ config = GlideClientConfiguration([NodeAddress(os.environ["VALKEY_HOST"], int(os
 
 
 async def generate_embed():
-    heartbeats = await valkey.get_all_heartbeats(bot.client)
-    host_string_tasks = [pretty_format_host(host) for host in heartbeats]
+    heartbeats = await valkey.get_all_hosts(bot.client)
+    host_string_tasks = [pretty_format_host(name, host) for name, host in heartbeats]
     waiting_unix_users = await valkey.get_all_waiting_users(bot.client)
 
     discord_ids = [await valkey.get_discord_id(bot.client, unix_user) for unix_user in waiting_unix_users]
@@ -178,7 +178,9 @@ async def register_user(ctx, user: discord.User, unix_user: str):
     await ctx.respond("User registered successfully.")
 
 
-async def pretty_format_host(data: HeartbeatData) -> str:
+async def pretty_format_host(host: str, data: HeartbeatData | None) -> str:
+    if data is None:
+        return f"⚠️ {host} Unavaliable"
     real_stamp = data.timestamp.ToDatetime()
     real_expiry = data.expiry.ToDatetime()
     match data.status:

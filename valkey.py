@@ -1,7 +1,7 @@
 import datetime
 import enum
 import logging
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict
 
 import glide
 from glide import GlideClient
@@ -45,6 +45,8 @@ _STATUS_MESSAGE_LIST_KEY = 'status_messages'
 _NOTIFICATIONS_QUEUE_KEY = 'notifs'
 _WAITING_QUEUE_KEY = 'waiting_queue'
 _PROCESSING_QUEUE_KEY = 'processing_queue'
+_REGISTERED_HOSTS_KEY = 'hosts'
+
 _LOCK_PREFIX = 'lock:'
 
 _HOST_KEY_PREFIX = 'rpi'
@@ -169,22 +171,19 @@ async def pop_notification_blocking(client: GlideClient) -> PopNotification | No
     return pop_notification
 
 
-async def get_all_heartbeats(client: GlideClient) -> list[HeartbeatData]:
-    heartbeats = []
-    cursor = '0'
-    while True:
-        cursor, keys = await client.scan(cursor, f'{_HOST_KEY_PREFIX}:*:{_HOST_HEARTBEAT_SUFFIX}')
-        if keys is None or len(keys) == 0:
-            break
-        decoded_keys = [key.decode() for key in keys]
-        heartbeats = []
-        for raw in await client.mget(decoded_keys):
-            heartbeat = HeartbeatData()
-            heartbeat.ParseFromString(raw)
-            heartbeats.append(heartbeat)
-        if cursor.decode() == '0':
-            break
-    return heartbeats
+async def get_all_hosts(client: GlideClient) -> Dict[str, HeartbeatData | None]:
+    data = {}
+    hosts = await client.smembers(_REGISTERED_HOSTS_KEY)
+    keys = [get_host_heartbeat(host.decode()) for host in hosts]
+    heartbeats = await client.mget(keys)
+    for i, status in enumerate(heartbeats):
+        if status is None:
+            data[keys[i]] = None
+            continue
+        heartbeat = HeartbeatData()
+        heartbeat.ParseFromString(status)
+        data[keys[i]] = heartbeat
+    return data
 
 
 async def requeue_timed_out_users(client: GlideClient):
@@ -198,6 +197,15 @@ async def requeue_timed_out_users(client: GlideClient):
             transaction.lpush(_WAITING_QUEUE_KEY, [user])
             await client.exec(transaction, True)
 
+async def register_host(client: GlideClient, hostname: str):
+    await client.sadd(_REGISTERED_HOSTS_KEY, [hostname])
+
+
+async def deregister_host(client: GlideClient, hostname: str):
+    transaction = Batch(is_atomic=True)
+    transaction.srem(_REGISTERED_HOSTS_KEY, [hostname])
+    transaction.delete([get_host_heartbeat(hostname)])
+    await client.exec(transaction, True)
 
 ####################
 #  HOST FUNCTIONS  #

@@ -122,6 +122,7 @@ class HostController:
 
     async def run(self):
         logger.info("Starting host controller...")
+        await valkey.register_host(self._valkey_client, self.name)
         try:
             await asyncio.gather(
                 self.fetch_user_loop(),
