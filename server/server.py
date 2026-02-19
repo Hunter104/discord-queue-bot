@@ -25,12 +25,13 @@ _HEARTBEAT_UPDATE = 2
 
 
 class HostController:
-    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, valkey_client: GlideClient):
+    def __init__(self, name: str, whitelist_path: str, time_slice: timedelta, config: GlideClientConfiguration):
         self.whitelist_path = whitelist_path
         self.time_slice = time_slice
         self.current_status: HostStatus = HostStatus()
         self.current_status.hostname = name
-        self._valkey_client = valkey_client
+        self.current_status.is_occupied = False
+        self.config = config
 
     def set_whitelist(self, whitelist: list[str]) -> None:
         with open(self.whitelist_path, "w") as f:
@@ -52,15 +53,15 @@ class HostController:
         self.set_whitelist([])
         return user
 
-    async def release_user(self):
+    async def release_user(self, client: GlideClient):
         if not self.current_status.is_occupied:
             logger.warning("No user to release")
             return
         subprocess.run(["pkill", "-SIGTERM", "-u", self.current_status.current_user], check=True, capture_output=True)
         user = self._unset_user()
-        await valkey.release_user(self._valkey_client, user)
+        await valkey.release_user(client, user)
 
-    async def expiry_timer(self):
+    async def expiry_timer(self, client: GlideClient):
         sleep_period = self.current_status.expiry.ToDatetime() - datetime.now()
         if sleep_period <= timedelta(0):
             logger.warning(
@@ -69,33 +70,37 @@ class HostController:
             logger.info(f"User %s will expire in %s, sleeping for %.2f seconds", self.current_status.current_user,
                         sleep_period, sleep_period.total_seconds())
             await asyncio.sleep(sleep_period.total_seconds())
-            await valkey.release_user(self._valkey_client, self.current_status.hostname)
+            await self.release_user(client)
 
     async def fetch_user_loop(self):
-        last_status = await valkey.get_host_data(self._valkey_client, self.current_status.hostname)
+        client = await GlideClient.create(self.config)
+        last_status = await valkey.get_host_data(client, self.current_status.hostname)
         if last_status:
             logger.info("Recovering last status %s", last_status)
             self.current_status = last_status
         while True:
             if not self.current_status.is_occupied:
-                user = await valkey.pop_waiting_queue_blocking(self._valkey_client)
+                user = await valkey.pop_waiting_queue_blocking(client)
                 if user:
                     logger.info("Found user %s", user)
                     self._set_user(user, datetime.now() + self.time_slice)
-                    await valkey.finish_processing(self._valkey_client, self.current_status, _HEARTBEAT_TIMEOUT)
-            await self.expiry_timer()
+                    await valkey.finish_processing(client, self.current_status, _HEARTBEAT_TIMEOUT)
+            await self.expiry_timer(client)
 
     async def send_heartbeat_loop(self):
+        client = await GlideClient.create(self.config)
         logger.info("Starting heartbeat loop")
         while True:
             self.current_status.last_heartbeat.FromDatetime(datetime.now())
-            await valkey.update_status(self._valkey_client, self.current_status, _HEARTBEAT_TIMEOUT)
+            await valkey.update_status(client, self.current_status, _HEARTBEAT_TIMEOUT)
             await asyncio.sleep(_HEARTBEAT_UPDATE)
 
     async def run(self):
+        client = await GlideClient.create(self.config)
         logger.info("Starting queue daemon...")
         self.set_whitelist([])
-        await valkey.register_host(self._valkey_client, self.current_status.hostname)
+        await valkey.register_host(client, self.current_status.hostname)
+        await client.close()
         await asyncio.gather(self.fetch_user_loop(), self.send_heartbeat_loop())
 
 
@@ -122,7 +127,7 @@ async def main():
         name=name,
         whitelist_path=whitelist_path,
         time_slice=time_slice,
-        valkey_client=await GlideClient.create(config),
+        config=config,
     )
 
     await controller.run()

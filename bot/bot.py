@@ -18,6 +18,9 @@ from common.proto.protocol_pb2 import HostStatus
 
 class ValkeyBot(discord.Bot):
     client: GlideClient
+    watchdog_client: GlideClient
+    message_updater_client: GlideClient
+    notification_reader_client: GlideClient
 
 
 logging.basicConfig(
@@ -34,6 +37,7 @@ intents.members = True
 bot = ValkeyBot(intents=intents)
 
 TEMPLATE_FILE = "templates/status_template.json.jinja"
+logger.info(os.getcwd())
 templateLoader = jinja2.FileSystemLoader(searchpath=".")
 templateEnv = jinja2.Environment(loader=templateLoader)
 template = templateEnv.get_template(TEMPLATE_FILE)
@@ -43,7 +47,7 @@ config = GlideClientConfiguration([NodeAddress(os.environ["VALKEY_HOST"], int(os
 
 async def generate_embed():
     heartbeats = await valkey.get_all_hosts(bot.client)
-    host_string_tasks = [pretty_format_host(name, host) for name, host in heartbeats]
+    host_string_tasks = [pretty_format_host(name, host) for name, host in heartbeats.items()]
     waiting_unix_users = await valkey.get_all_waiting_users(bot.client)
 
     discord_ids = [await valkey.get_discord_id(bot.client, unix_user) for unix_user in waiting_unix_users]
@@ -60,13 +64,13 @@ async def generate_embed():
 
 @tasks.loop(seconds=1)
 async def monitor_processing_queue():
-    await valkey.requeue_timed_out_users(bot.client)
+    await valkey.requeue_timed_out_users(bot.watchdog_client)
 
 
 @tasks.loop(seconds=1)
 async def update_status_messages():
     embed = await generate_embed()
-    async for channelId, messageId in valkey.get_status_messages(bot.client):
+    async for channelId, messageId in valkey.get_status_messages(bot.message_updater_client):
         try:
             channel = bot.get_channel(channelId)
             if channel is None:
@@ -79,16 +83,16 @@ async def update_status_messages():
                 messageId,
                 channelId,
             )
-            await valkey.delete_status_message(bot.client, channelId, messageId)
+            await valkey.delete_status_message(bot.message_updater_client, channelId, messageId)
 
 
 @tasks.loop(seconds=1)
 async def read_notifications():
-    data = await valkey.pop_notification_blocking(bot.client)
+    data = await valkey.pop_notification_blocking(bot.notification_reader_client)
 
     logger.info("Got notification: %s", data)
     unix_user = data.unix_user
-    discord_id = await valkey.get_discord_id(bot.client, unix_user)
+    discord_id = await valkey.get_discord_id(bot.notification_reader_client, unix_user)
     if discord_id is None:
         logger.error("Unix user %s not registered.", unix_user)
         return
@@ -107,6 +111,9 @@ async def on_ready():
     logger.info("Logged in as %s", bot.user)
     logger.info("Starting valkey client")
     bot.client = await GlideClient.create(config)
+    bot.message_updater_client = await GlideClient.create(config)
+    bot.watchdog_client = await GlideClient.create(config)
+    bot.notification_reader_client = await GlideClient.create(config)
 
     logger.info("Starting notification reading loop")
     read_notifications.start()
