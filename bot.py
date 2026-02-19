@@ -188,6 +188,7 @@ async def pretty_format_host(host: str, data: HostStatus | None) -> str:
         return f"🔴 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {real_expiry.strftime('%H:%M:%S')}"
     return f"🟢 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - Available"
 
+
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
 async def create_status_message(ctx):

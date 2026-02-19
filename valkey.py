@@ -8,7 +8,7 @@ from glide import GlideClient
 from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
 
-from protocol_pb2 import  HostStatus, PopNotification
+from protocol_pb2 import HostStatus, PopNotification
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,7 @@ async def requeue_timed_out_users(client: GlideClient):
             transaction.lpush(_WAITING_QUEUE_KEY, [user])
             await client.exec(transaction, True)
 
+
 async def register_host(client: GlideClient, hostname: str):
     await client.sadd(_REGISTERED_HOSTS_KEY, [hostname])
 
@@ -200,6 +201,7 @@ async def deregister_host(client: GlideClient, hostname: str):
     transaction.srem(_REGISTERED_HOSTS_KEY, [hostname])
     transaction.delete([get_host_status_key(hostname)])
     await client.exec(transaction, True)
+
 
 ####################
 #  HOST FUNCTIONS  #
@@ -246,16 +248,19 @@ async def finish_processing(client: GlideClient, host_status: HostStatus, timeou
 async def release_user(client: GlideClient, hostname: str):
     await client.delete([get_user_assigned_host_key(hostname)])
 
+
 async def update_status(client: GlideClient, host_data: HostStatus, timeout: datetime.timedelta):
     transaction = Batch(is_atomic=True)
     if host_data.is_occupied:
-        transaction.set(get_user_assigned_host_key(host_data.current_user), host_data.hostname, expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout))
+        transaction.set(get_user_assigned_host_key(host_data.current_user), host_data.hostname,
+                        expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout))
     transaction.set(
         get_host_status_key(host_data.hostname),
         host_data.SerializeToString(),
         expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout)
     )
     await client.exec(transaction, True)
+
 
 # TODO: fazer um wrapper pros protobufs
 async def get_host_data(client: GlideClient, hostname: str):
