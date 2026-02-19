@@ -72,4 +72,5 @@ async def update_status(client: GlideClient, host_data: HostStatus, timeout: dat
 async def get_host_data(client: GlideClient, hostname: str):
     data = HostStatus()
     raw = await client.get(get_host_status_key(hostname))
-    return data.ParseFromString(raw)
+    data.ParseFromString(raw)
+    return data
