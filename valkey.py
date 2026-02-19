@@ -7,9 +7,8 @@ import glide
 from glide import GlideClient
 from glide.glide import Script
 from glide_shared import ExpirySet, ExpiryType, Batch
-from google.protobuf.timestamp_pb2 import Timestamp
 
-from protocol_pb2 import HeartbeatData, HostStatus, PopNotification, SlotData
+from protocol_pb2 import  HostStatus, PopNotification
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +49,7 @@ _REGISTERED_HOSTS_KEY = 'hosts'
 _LOCK_PREFIX = 'lock:'
 
 _HOST_KEY_PREFIX = 'rpi'
-_HOST_SLOT_KEY_SUFFIX = 'slot'
-_HOST_HEARTBEAT_SUFFIX = 'heartbeat'
+_HOST_STATUS_SUFFIX = 'status'
 
 _USER_KEY_PREFIX = 'user'
 _USER_ASSIGNMENT_KEY_SUFFIX = 'assigned_to'
@@ -83,16 +81,12 @@ def get_user_unix_id_key(discord_id: str) -> str:
     return f'{_USER_KEY_PREFIX}:{discord_id}:{_USER_UNIX_ID_SUFFIX}'
 
 
-def get_host_slot_key(hostname: str) -> str:
-    return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_SLOT_KEY_SUFFIX}'
-
-
 def get_user_assigned_host_key(username: str) -> str:
     return f'{_USER_KEY_PREFIX}:{username}:{_USER_ASSIGNMENT_KEY_SUFFIX}'
 
 
-def get_host_heartbeat(hostname: str):
-    return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_HEARTBEAT_SUFFIX}'
+def get_host_status_key(hostname: str):
+    return f'{_HOST_KEY_PREFIX}:{hostname}:{_HOST_STATUS_SUFFIX}'
 
 
 ########################
@@ -171,18 +165,18 @@ async def pop_notification_blocking(client: GlideClient) -> PopNotification | No
     return pop_notification
 
 
-async def get_all_hosts(client: GlideClient) -> Dict[str, HeartbeatData | None]:
+async def get_all_hosts(client: GlideClient) -> Dict[str, HostStatus | None]:
     data = {}
     hosts = await client.smembers(_REGISTERED_HOSTS_KEY)
-    keys = [get_host_heartbeat(host.decode()) for host in hosts]
+    keys = [get_host_status_key(host.decode()) for host in hosts]
     heartbeats = await client.mget(keys)
     for i, status in enumerate(heartbeats):
         if status is None:
             data[keys[i]] = None
             continue
-        heartbeat = HeartbeatData()
-        heartbeat.ParseFromString(status)
-        data[keys[i]] = heartbeat
+        host_status = HostStatus()
+        host_status.ParseFromString(status)
+        data[keys[i]] = host_status
     return data
 
 
@@ -204,7 +198,7 @@ async def register_host(client: GlideClient, hostname: str):
 async def deregister_host(client: GlideClient, hostname: str):
     transaction = Batch(is_atomic=True)
     transaction.srem(_REGISTERED_HOSTS_KEY, [hostname])
-    transaction.delete([get_host_heartbeat(hostname)])
+    transaction.delete([get_host_status_key(hostname)])
     await client.exec(transaction, True)
 
 ####################
@@ -222,71 +216,49 @@ async def pop_waiting_queue_blocking(client: GlideClient) -> str | None:
     return user
 
 
-async def finish_processing(client: GlideClient, hostname: str, user: str, expiry: datetime.datetime):
+async def finish_processing(client: GlideClient, host_status: HostStatus, timeout: datetime.timedelta):
+    if not host_status.HasField("current_user") or not host_status.HasField("expiry"):
+        raise ValueError("Host status must have current user and expiry set")
+
     transaction = Batch(is_atomic=True)
 
-    occupied_slot = SlotData()
-    occupied_slot.current_user = user
-    timestamp = Timestamp()
-    timestamp.FromDatetime(datetime.datetime.now())
-    occupied_slot.expiry.FromDatetime(expiry)
-
     notif = PopNotification()
-    notif.hostname = hostname
-    notif.unix_user = user
+    notif.hostname = host_status.hostname
+    notif.unix_user = host_status.current_user
 
     transaction.set(
-        get_host_slot_key(hostname),
-        occupied_slot.SerializeToString(),
-        expiry=ExpirySet(expiry_type=ExpiryType.UNIX_MILLSEC, value=expiry)
+        get_host_status_key(host_status.hostname),
+        host_status.SerializeToString(),
+        expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout)
     )
 
     transaction.set(
-        get_user_assigned_host_key(user),
-        hostname,
-        expiry=ExpirySet(expiry_type=ExpiryType.UNIX_MILLSEC, value=expiry)
+        get_user_assigned_host_key(host_status.current_user),
+        host_status.hostname,
+        expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout)
     )
 
     transaction.lpush(_NOTIFICATIONS_QUEUE_KEY, [notif.SerializeToString()])
-    transaction.lrem(_PROCESSING_QUEUE_KEY, 0, hostname)
+    transaction.lrem(_PROCESSING_QUEUE_KEY, 0, host_status.hostname)
     await client.exec(transaction, True)
-
-
-async def get_slot(client: GlideClient, hostname: str) -> SlotData | None:
-    raw = await client.get(get_host_slot_key(hostname))
-    if raw is None:
-        return None
-    slot = SlotData()
-    slot.ParseFromString(raw)
-    return slot
 
 
 async def release_user(client: GlideClient, hostname: str):
+    await client.delete([get_user_assigned_host_key(hostname)])
+
+async def update_status(client: GlideClient, host_data: HostStatus, timeout: datetime.timedelta):
     transaction = Batch(is_atomic=True)
-    transaction.delete([get_host_slot_key(hostname)])
-    transaction.delete([get_user_assigned_host_key(hostname)])
+    if host_data.is_occupied:
+        transaction.set(get_user_assigned_host_key(host_data.current_user), host_data.hostname, expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout))
+    transaction.set(
+        get_host_status_key(host_data.hostname),
+        host_data.SerializeToString(),
+        expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=timeout)
+    )
     await client.exec(transaction, True)
 
-
-async def send_heartbeat(
-        client: GlideClient,
-        hostname: str,
-        status: HostStatus,
-        expiry: datetime.datetime | None,
-        current_user: str | None,
-        timestamp: datetime.datetime,
-        message_expiry: datetime.timedelta,
-):
-    data = HeartbeatData()
-    data.hostname = hostname
-    data.status = status
-    if current_user is not None:
-        data.current_user = current_user
-    if expiry is not None:
-        data.expiry.FromDatetime(expiry)
-    data.timestamp.FromDatetime(timestamp)
-    return await client.set(
-        get_host_heartbeat(data.hostname),
-        data.SerializeToString(),
-        expiry=ExpirySet(expiry_type=ExpiryType.SEC, value=message_expiry)
-    )
+# TODO: fazer um wrapper pros protobufs
+async def get_host_data(client: GlideClient, hostname: str):
+    data = HostStatus()
+    raw = await client.get(get_host_status_key(hostname))
+    return data.ParseFromString(raw)

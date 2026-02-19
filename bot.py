@@ -13,7 +13,7 @@ from glide_shared import NodeAddress, GlideClientConfiguration
 
 import valkey
 
-from protocol_pb2 import HeartbeatData, HostStatus
+from protocol_pb2 import HostStatus
 
 
 class ValkeyBot(discord.Bot):
@@ -178,20 +178,15 @@ async def register_user(ctx, user: discord.User, unix_user: str):
     await ctx.respond("User registered successfully.")
 
 
-async def pretty_format_host(host: str, data: HeartbeatData | None) -> str:
+async def pretty_format_host(host: str, data: HostStatus | None) -> str:
     if data is None:
         return f"⚠️ {host} Unavaliable"
-    real_stamp = data.timestamp.ToDatetime()
-    real_expiry = data.expiry.ToDatetime()
-    match data.status:
-        case HostStatus.IN_USE:
-            user_id = await valkey.get_discord_id(bot.client, data.current_user)
-            return f"🔴 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {real_expiry.strftime('%H:%M:%S')}"
-        case HostStatus.AWAITING:
-            return f"🟢 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - Available"
-        case _:
-            raise ValueError(f"Unknown status {data.status}")
-
+    real_stamp = data.last_heartbeat.ToDatetime()
+    if data.is_occupied:
+        user_id = await valkey.get_discord_id(bot.client, data.current_user)
+        real_expiry = data.expiry.ToDatetime()
+        return f"🔴 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {real_expiry.strftime('%H:%M:%S')}"
+    return f"🟢 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - Available"
 
 @bot.slash_command(name="create_status_message", description="Admin: create a status message in this channel")
 @discord.default_permissions(manage_guild=True)
