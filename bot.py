@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from glide import GlideClient
 from glide_shared import NodeAddress, GlideClientConfiguration
 
-import valkey
+import valkey_bot as valkey
 
 from protocol_pb2 import HostStatus
 

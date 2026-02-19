@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from glide import GlideClientConfiguration, GlideClient
 
 from protocol_pb2 import HostStatus
-import valkey
+import valkey_server as valkey
 
 logging.basicConfig(
     level=logging.INFO,
