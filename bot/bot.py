@@ -13,7 +13,7 @@ from glide_shared import NodeAddress, GlideClientConfiguration
 
 import valkey_bot as valkey
 
-from protocol_pb2 import HostStatus
+from common.proto.protocol_pb2 import HostStatus
 
 
 class ValkeyBot(discord.Bot):
@@ -33,7 +33,7 @@ intents.members = True
 
 bot = ValkeyBot(intents=intents)
 
-TEMPLATE_FILE = "status_template.json.jinja"
+TEMPLATE_FILE = "templates/status_template.json.jinja"
 templateLoader = jinja2.FileSystemLoader(searchpath=".")
 templateEnv = jinja2.Environment(loader=templateLoader)
 template = templateEnv.get_template(TEMPLATE_FILE)

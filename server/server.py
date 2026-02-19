@@ -10,7 +10,7 @@ from glide_shared import NodeAddress
 from dotenv import load_dotenv
 from glide import GlideClientConfiguration, GlideClient
 
-from protocol_pb2 import HostStatus
+from common.proto.protocol_pb2 import HostStatus
 import valkey_server as valkey
 
 logging.basicConfig(

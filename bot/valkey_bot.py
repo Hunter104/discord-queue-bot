@@ -7,8 +7,8 @@ from glide import GlideClient
 from glide.glide import Script
 from glide_shared import Batch
 
-from protocol_pb2 import HostStatus, PopNotification
-from valkey_common import *
+from common.proto.protocol_pb2 import HostStatus, PopNotification
+from common.valkey_defs import *
 
 logger = logging.getLogger(__name__)
 

@@ -5,8 +5,8 @@ import glide
 from glide import GlideClient
 from glide_shared import ExpirySet, ExpiryType, Batch
 
-from protocol_pb2 import HostStatus, PopNotification
-from valkey_common import *
+from common.proto.protocol_pb2 import HostStatus, PopNotification
+from common.valkey_defs import *
 
 logger = logging.getLogger(__name__)
 
