@@ -41,7 +41,7 @@ _ADD_USER_SCRIPT = Script("""
 async def add_user(client: GlideClient, username: str) -> AddReturnCode:
     ret = await client.invoke_script(
         _ADD_USER_SCRIPT,
-        [WAITING_QUEUE_KEY, get_user_assigned_host_key(username), PROCESSING_QUEUE_KEY],
+        [WAITING_QUEUE_KEY, get_user_assigned_to_host_key(username), PROCESSING_QUEUE_KEY],
         [username],
     )
     return AddReturnCode(ret)

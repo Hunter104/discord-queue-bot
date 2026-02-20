@@ -39,7 +39,7 @@ def get_user_unix_id_key(discord_id: str) -> str:
     return f'{USER_KEY_PREFIX}:{discord_id}:{USER_UNIX_ID_SUFFIX}'
 
 
-def get_user_assigned_host_key(username: str) -> str:
+def get_user_assigned_to_host_key(username: str) -> str:
     return f'{USER_KEY_PREFIX}:{username}:{USER_ASSIGNMENT_KEY_SUFFIX}'
 
 
