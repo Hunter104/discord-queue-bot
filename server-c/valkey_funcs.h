@@ -43,9 +43,9 @@ extern const char *USER_ASSIGNMENT_SUFFIX;
 typedef struct HostStatus {
   char hostname[MAX_NAME_SIZE];
   bool is_occupied;
-  uint64_t expiry;
+  time_t expiry;
   char current_user[MAX_NAME_SIZE];
-  uint64_t last_timestamp;
+  time_t last_timestamp;
 } HostStatus;
 
 int register_host(redisContext *c, char *hostname);

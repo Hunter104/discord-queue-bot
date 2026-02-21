@@ -157,12 +157,12 @@ int get_status(redisContext *c, char *hostname, HostStatus *hostStatus) {
   hostStatus->hostname[MAX_NAME_SIZE - 1] = '\0';
 
   hostStatus->is_occupied = strtol(reply->element[3]->str, NULL, 10);
-  hostStatus->expiry = strtoul(reply->element[5]->str, NULL, 10);
+  hostStatus->expiry = strtol(reply->element[5]->str, NULL, 10);
 
   strncpy(hostStatus->current_user, reply->element[7]->str, MAX_NAME_SIZE - 1);
   hostStatus->current_user[MAX_NAME_SIZE - 1] = '\0';
 
-  hostStatus->last_timestamp = strtoul(reply->element[9]->str, NULL, 10);
+  hostStatus->last_timestamp = strtol(reply->element[9]->str, NULL, 10);
 
   freeReplyObject(reply);
   return 0;
