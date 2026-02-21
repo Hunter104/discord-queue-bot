@@ -6,7 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-const char *WAITING_QUEUE_KEY = "queue";
+const char *WAITING_QUEUE_KEY = "waiting_queue";
 const char *REGISTERED_HOSTS_KEY = "hosts";
 const char *PROCESSING_QUEUE_KEY = "processing_queue";
 

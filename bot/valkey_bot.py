@@ -1,13 +1,13 @@
-import enum
+from datetime import datetime, timedelta
 import enum
 import logging
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict
 
 from glide import GlideClient
 from glide.glide import Script
 from glide_shared import Batch
 
-from common.proto.protocol_pb2 import HostStatus, PopNotification
 from common.valkey_defs import *
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,31 @@ _ADD_USER_SCRIPT = Script("""
     server.call("lpush", KEYS[1], ARGV[1])
     return 0
 """)
+
+@dataclass
+class HostStatus:
+    hostname: str
+    is_occupied: bool
+    expiry: datetime | None
+    current_user: str | None
+    last_timestamp: datetime
+
+    @classmethod
+    def from_hgetall(cls, data: dict[bytes, bytes]) -> "HostStatus":
+        is_occupied = bool(int(data[b"is_occupied"].decode()))
+        if is_occupied:
+            expiry = datetime.fromtimestamp(int(data[b"expiry"].decode()))
+            current_user = data[b"current_user"].decode()
+        else:
+            expiry = None
+            current_user = None
+        return cls(
+            hostname=data[b"hostname"].decode(),
+            is_occupied=is_occupied,
+            expiry=expiry,
+            current_user=current_user,
+            last_timestamp=datetime.fromtimestamp(int(data[b"last_timestamp"])),
+        )
 
 async def add_user(client: GlideClient, username: str) -> AddReturnCode:
     ret = await client.invoke_script(
@@ -101,27 +126,16 @@ async def get_all_waiting_users(client: GlideClient, max_users: int = 5) -> list
     return [x.decode() for x in raw]
 
 
-async def pop_notification_blocking(client: GlideClient) -> PopNotification | None:
-    raw = await client.brpop([NOTIFICATIONS_QUEUE_KEY], 0)
-    if raw is None:
-        return None
-    pop_notification = PopNotification()
-    pop_notification.ParseFromString(raw[1])
-    return pop_notification
-
-
 async def get_all_hosts(client: GlideClient) -> Dict[str, HostStatus | None]:
     data = {}
     hosts = await client.smembers(REGISTERED_HOSTS_KEY)
-    keys = [get_host_status_key(host.decode()) for host in hosts]
-    heartbeats = await client.mget(keys)
-    for i, status in enumerate(heartbeats):
-        if status is None:
-            data[keys[i]] = None
-            continue
-        host_status = HostStatus()
-        host_status.ParseFromString(status)
-        data[keys[i]] = host_status
+    for host in hosts:
+        hostname = host.decode()
+        raw = await client.hgetall(get_host_status_key(hostname))
+        if not raw:
+            data[hostname] = None
+        else:
+            data[hostname] = HostStatus.from_hgetall(raw)
     return data
 
 

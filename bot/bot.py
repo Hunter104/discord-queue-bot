@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 from glide import GlideClient
 from glide_shared import NodeAddress, GlideClientConfiguration
 
+from common.valkey_defs import HOST_KEY_PREFIX
 import valkey_bot as valkey
-
-from common.proto.protocol_pb2 import HostStatus
+from valkey_bot import HostStatus
 
 
 class ValkeyBot(discord.Bot):
@@ -42,8 +42,17 @@ templateLoader = jinja2.FileSystemLoader(searchpath=".")
 templateEnv = jinja2.Environment(loader=templateLoader)
 template = templateEnv.get_template(TEMPLATE_FILE)
 
-config = GlideClientConfiguration([NodeAddress(os.environ["VALKEY_HOST"], int(os.environ["VALKEY_PORT"]))])
+addresses = [NodeAddress(os.environ["VALKEY_HOST"], int(os.environ["VALKEY_PORT"]))]
+config = GlideClientConfiguration(addresses)
 
+pubsub_config = GlideClientConfiguration.PubSubSubscriptions(
+    channels_and_patterns={
+        GlideClientConfiguration.PubSubChannelModes.Pattern: {f"{HOST_KEY_PREFIX}:*"}
+    },
+    context = None,
+    callback = None,
+)
+notif_config = GlideClientConfiguration(addresses, pubsub_subscriptions=pubsub_config)
 
 async def generate_embed():
     heartbeats = await valkey.get_all_hosts(bot.client)
@@ -88,10 +97,12 @@ async def update_status_messages():
 
 @tasks.loop(seconds=1)
 async def read_notifications():
-    data = await valkey.pop_notification_blocking(bot.notification_reader_client)
+    message = await bot.notification_reader_client.get_pubsub_message()
 
-    logger.info("Got notification: %s", data)
-    unix_user = data.unix_user
+    logger.info("Got message: %s", message)
+
+    host = message.channel.decode().removeprefix(HOST_KEY_PREFIX+":")
+    unix_user = message.message.decode()
     discord_id = await valkey.get_discord_id(bot.notification_reader_client, unix_user)
     if discord_id is None:
         logger.error("Unix user %s not registered.", unix_user)
@@ -103,7 +114,7 @@ async def read_notifications():
         return
 
     # TODO: talvez mandar num canal específico
-    await discord_user.send(f'You have been assigned to host {data.hostname}.')
+    await discord_user.send(f'You have been assigned to host {message.hostname}.')
 
 
 @bot.event
@@ -113,7 +124,7 @@ async def on_ready():
     bot.client = await GlideClient.create(config)
     bot.message_updater_client = await GlideClient.create(config)
     bot.watchdog_client = await GlideClient.create(config)
-    bot.notification_reader_client = await GlideClient.create(config)
+    bot.notification_reader_client = await GlideClient.create(notif_config)
 
     logger.info("Starting notification reading loop")
     read_notifications.start()
@@ -187,11 +198,11 @@ async def register_user(ctx, user: discord.User, unix_user: str):
 
 async def pretty_format_host(host: str, data: HostStatus | None) -> str:
     if data is None:
-        return f"⚠️ {host} Unavaliable"
-    real_stamp = data.last_heartbeat.ToDatetime()
+        return f"⚠️ {host}: Unavaliable"
+    real_stamp = data.last_timestamp
     if data.is_occupied:
         user_id = await valkey.get_discord_id(bot.client, data.current_user)
-        real_expiry = data.expiry.ToDatetime()
+        real_expiry = data.expiry
         return f"🔴 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - In use by <@{user_id}> until {real_expiry.strftime('%H:%M:%S')}"
     return f"🟢 {data.hostname} (last seen: {real_stamp.strftime('%H:%M:%S')}) - Available"
 

@@ -3,16 +3,14 @@ import logging
 import os
 import socket
 import subprocess
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-
-from glide_shared import NodeAddress
 
 from dotenv import load_dotenv
 from glide import GlideClientConfiguration, GlideClient
+from glide_shared import NodeAddress
 
-from common.proto.protocol_pb2 import HostStatus
 import valkey_server as valkey
+from valkey_server import HostStatus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,7 +25,8 @@ class HostController:
                  heartbeat_update: float = 2, time_slice: timedelta = timedelta(seconds=10 * 60)):
         self.whitelist_path: str = whitelist_path
         self.time_slice: timedelta = time_slice
-        self.current_status: HostStatus = HostStatus(hostname=host_name, is_occupied=False)
+        self.current_status: HostStatus = HostStatus(hostname=host_name, is_occupied=False, expiry=None, current_user=None,
+                                                     last_timestamp=datetime.now())
         self.valkey_host: str = valkey_host
         self.valkey_port: int = valkey_port
         self.config: GlideClientConfiguration = GlideClientConfiguration([NodeAddress(valkey_host, valkey_port)])
@@ -44,18 +43,18 @@ class HostController:
             f.write("\n".join(whitelist))
 
     async def expiry_timer(self, client: GlideClient):
-        sleep_period = self.current_status.expiry.ToDatetime() - datetime.now()
+        sleep_period = self.current_status.expiry - datetime.now()
         if sleep_period <= timedelta(0):
             logger.warning("User %s has already expired", self.current_status.current_user)
             return
-        logger.info("User %s will expire in %s", self.current_status.current_user, self.current_status.expiry.ToDatetime())
+        logger.info("User %s will expire in %s", self.current_status.current_user, self.current_status.expiry)
         await asyncio.sleep(sleep_period.total_seconds())
         logger.info("Releasing user %s", self.current_status.current_user)
         subprocess.run(["pkill", "-SIGTERM", "-u", self.current_status.current_user], check=True, capture_output=True)
         await valkey.release_user(client, self.current_status.current_user)
         self.current_status.is_occupied = False
-        self.current_status.ClearField("current_user")
-        self.current_status.ClearField("expiry")
+        self.current_status.current_user = None
+        self.current_status.expiry = None
         self.set_whitelist([])
 
     async def fetch_user_loop(self):
@@ -70,7 +69,7 @@ class HostController:
                 expiry = datetime.now() + self.time_slice
                 self.current_status.is_occupied = True
                 self.current_status.current_user = user
-                self.current_status.expiry.FromDatetime(expiry)
+                self.current_status.expiry = expiry
                 self.set_whitelist([user])
                 await valkey.finish_processing(client, self.current_status, self.heartbeat_timeout)
             await self.expiry_timer(client)
@@ -79,7 +78,7 @@ class HostController:
         client = await GlideClient.create(self.config)
         logger.info("Starting heartbeat loop")
         while True:
-            self.current_status.last_heartbeat.FromDatetime(datetime.now())
+            self.current_status.last_heartbeat = datetime.now()
             await valkey.update_status(client, self.current_status, self.heartbeat_timeout)
             await asyncio.sleep(self.heartbeat_update)
 
