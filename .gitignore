@@ -4,3 +4,4 @@ __pycache__
 userService_pb2*
 .idea
 protocol_pb2*
+*.o
